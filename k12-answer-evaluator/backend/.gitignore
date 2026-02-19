@@ -12,3 +12,4 @@ data/textbooks/*
 !data/textbooks/.gitkeep
 *.log
 .DS_Store
+google-vision-api-key.json
