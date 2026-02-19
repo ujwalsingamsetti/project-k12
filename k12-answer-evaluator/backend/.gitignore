@@ -12,4 +12,5 @@ data/textbooks/*
 !data/textbooks/.gitkeep
 *.log
 .DS_Store
-google-vision-api-key.json
+
+k12-answer-evaluator/backend/google-vision-credentials.json
