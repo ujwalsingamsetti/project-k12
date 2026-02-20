@@ -65,21 +65,29 @@ def evaluate_mcq(question, student_answer: str) -> dict:
     # Lenient check: if the correct choice is IN the student's answer text at all
     # e.g., if correct is 'B' and answer is '(b) something else', or just 'B.', or 'option B'
     # We check if the letter exists as a word or option-like character
+    # Get the text of the correct option for display
+    correct_option_text = ""
+    if hasattr(question, 'options') and isinstance(question.options, dict):
+        correct_option_text = question.options.get(correct_choice, "")
+
     is_correct = False
     if correct_choice and student_answer:
         # Lenient check: if the correct choice is IN the student's answer text at all
         # Look for the letter bounded by anything that isn't another letter (case-insensitive)
-        import re
         pattern = r"(?i)(?<![A-Z])" + correct_choice + r"(?![A-Z])"
         if re.search(pattern, student_answer) or str(correct_choice).lower() == str(student_answer).strip().lower():
              is_correct = True
-
-    marks_obtained = question.marks if is_correct else 0
+        
+        # Textual match check: if they wrote the full text of the option instead of the letter (e.g., 'Ragpicker')
+        if not is_correct and correct_option_text:
+            cleaned_correct = re.sub(r'[^a-zA-Z0-9\s]', '', correct_option_text.lower()).strip()
+            cleaned_student = re.sub(r'[^a-zA-Z0-9\s]', '', student_answer.lower()).strip()
+            # If the option text is meaningful (> 2 chars) and appears in the student's answer
+            if cleaned_correct and len(cleaned_correct) > 2 and cleaned_correct in cleaned_student:
+                is_correct = True
+                student_choice = correct_choice # Fake it so the feedback makes sense
     
-    # Get the text of the correct option for display
-    correct_option_text = ""
-    if question.options and isinstance(question.options, dict):
-        correct_option_text = question.options.get(correct_choice, "")
+    marks_obtained = question.marks if is_correct else 0
     
     return {
         "score": marks_obtained,

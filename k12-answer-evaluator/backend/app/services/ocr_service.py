@@ -324,6 +324,11 @@ class OCRService:
         
         # O → 0 inside equations (between operators or numbers)
         text = re.sub(r'([+\-*/=<>\s])O([+\-*/=<>\s])', r'\g<1>0\2', text)
+
+        # Question prefix mistakes (Ql. -> Q1., Q/ -> Q1, etc)
+        text = re.sub(r'\bQ[lI]\b', 'Q1', text)
+        text = re.sub(r'\bQl\.', 'Q1.', text)
+        text = re.sub(r'\bQ[lI]\.', 'Q1.', text)
         
         # — (dash) → – in range expressions
         text = text.replace('—', '–')

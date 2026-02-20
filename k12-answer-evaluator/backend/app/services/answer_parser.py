@@ -15,14 +15,20 @@ class AnswerParser:
     """
 
     def parse_answers(self, text: str) -> dict:
-        """Parse raw OCR text, strictly merge nested bullet lists/numbers, and return {question_number (int): answer_text (str)}."""
+        """Parse raw OCR text and return {question_number (int): answer_text (str)}."""
         if not text or not text.strip():
             logger.warning("Empty text received by AnswerParser")
             return {}
 
-        # Handle multi-column OCR output
+        # ── Pre-process common OCR text errors that break parsing
+        # Fix Ql., QI. -> Q1.
+        text = re.sub(r'\bQ[lI]\.', 'Q1.', text)
+        text = re.sub(r'\bQ[lI]\b', 'Q1', text)
+
+        # ── Handle multi-column OCR output
         # Insert newline before any standalone number followed by dot/paren (with leading/trailing space restrictions)
-        text = re.sub(r'(?<!\n)(?<!\d)\s*(\d{1,2}[\.\)])\s+', r'\n\1 ', " " + text)
+        # Avoid matching if preceded by a letter (e.g., Q12.) because that destroys the prefix!
+        text = re.sub(r'(?<!\n)(?<![A-Za-z0-9])\s*(\d{1,2}[\.\)])\s+', r'\n\1 ', " " + text)
 
         # Special case: pure MCQ sheet where each line is just "A", "(B)", etc.
         mcq_only = self._try_pure_mcq(text)
@@ -83,6 +89,35 @@ class AnswerParser:
                     preamble = ""
 
                 answers[q_num] += ans_text
+
+        # Post-process: redistribute stacked answers where OCR grouped Q12, Q13, Q14 and merged all their content into the last one
+        empty_qs = [q for q, a in answers.items() if not a.strip()]
+        if empty_qs:
+            for q in sorted(answers.keys()):
+                if answers[q].strip():
+                    stacked_empties = []
+                    curr = q - 1
+                    while curr in empty_qs:
+                        stacked_empties.insert(0, curr)
+                        curr -= 1
+                        
+                    if stacked_empties:
+                        restarts = list(re.finditer(r'(?m)^\s*(?:Q\s*)?1[\.\)]\s+', answers[q]))
+                        # Ensure we have exactly enough "1." restarts to fill the empty questions plus the current one
+                        if len(restarts) > 1 and len(restarts) == len(stacked_empties) + 1:
+                            chunks = []
+                            last_idx = 0
+                            for r in restarts[1:]:
+                                chunks.append(answers[q][last_idx:r.start()].strip())
+                                last_idx = r.start()
+                            chunks.append(answers[q][last_idx:].strip())
+                            
+                            targets = stacked_empties + [q]
+                            for target, chunk in zip(targets, chunks):
+                                answers[target] = chunk
+                            # Remove processed questions so they aren't processed again
+                            for eq in stacked_empties:
+                                empty_qs.remove(eq)
 
         cleaned_answers = {q: self._clean_answer(a) for q, a in answers.items()}
 
