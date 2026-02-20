@@ -17,7 +17,7 @@ class Question(Base):
     paper_id = Column(UUID(as_uuid=True), ForeignKey("question_papers.id"), nullable=False)
     question_number = Column(Integer, nullable=False)
     question_text = Column(Text, nullable=False)
-    question_type = Column(Enum(QuestionType), nullable=False)
+    question_type = Column(Enum(QuestionType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     marks = Column(Integer, nullable=False)
     expected_keywords = Column(JSON)
     options = Column(JSON, nullable=True)  # For MCQ: {"A": "option1", "B": "option2", ...}

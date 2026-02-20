@@ -1,8 +1,10 @@
 import os
+import re
 import json
 import logging
-from typing import Dict, List, Optional, Callable
-from openai import OpenAI
+from typing import Dict, List
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,42 +13,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EvaluationService:
-    """LLM-based answer evaluation service optimized for Llama 3.2:3b via Ollama"""
-    
-    EVALUATION_PROMPT = """You are a {subject} teacher evaluating a Class {class_level} student's answer.
-
-Question: {question}
-
-Textbook Reference:
-{textbook_context}
-
-Student Answer:
-{student_answer}
-
-Evaluate and return JSON:
-{{
-  "score": <0-{max_score}>,
-  "score_breakdown": {{"correctness": <0-{correctness_points}>, "completeness": <0-{completeness_points}>, "understanding": <0-{understanding_points}>}},
-  "correct_points": ["what student got right"],
-  "errors": [{{"what": "error", "why": "reason", "impact": "effect"}}],
-  "missing_concepts": ["missing key points"],
-  "correct_answer_should_include": ["essential points"],
-  "improvement_guidance": [{{"suggestion": "how to improve", "resource": "where to study", "practice": "exercise"}}],
-  "overall_feedback": "summary"
-}}
-
-Return only valid JSON."""
+    """Gemini-based answer evaluation service (FREE tier)"""
     
     def __init__(self):
-        """Initialize evaluation service with local LLM configuration"""
-        self.client = OpenAI(
-            base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1"),
-            api_key=os.getenv("OPENAI_API_KEY", "not-needed")
-        )
-        self.model = os.getenv("OPENAI_MODEL", "llama3.2:3b")
-        self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
-        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "2000"))
-        logger.info(f"Initialized EvaluationService with {self.model} via Ollama")
+        """Initialize the Gemini client using the new SDK"""
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY not found in .env file. Get free key from https://aistudio.google.com/app/apikey")
+        
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-pro'
+        logger.info(f"✅ Initialized GenAI client with {self.model_name}")
     
     def evaluate_answer(
         self,
@@ -54,611 +31,182 @@ Return only valid JSON."""
         student_answer: str,
         textbook_context: str,
         subject: str,
-        class_level: str = "10",
+        class_level: str = "12",
         max_score: int = 10,
-        diagram_info: dict = None
+        diagram_info: dict = None,
+        marking_scheme: dict = None,
+        rag_scores: List[float] = None
     ) -> Dict:
-        """Evaluate student answer using local LLM with optional diagram context"""
+        """Evaluate student answer using Gemini API"""
         
-        logger.info(f"Evaluating {subject} question...")
-        logger.debug(f"Question: {question[:100]}...")
-        logger.debug(f"Student answer: {student_answer[:100]}...")
-        
-        # Add diagram context if available
-        diagram_context = ""
-        if diagram_info and diagram_info.get("has_diagrams"):
-            shapes = diagram_info.get("shapes_detected", [])
-            if shapes:
-                shape_list = ", ".join([s.get("type", "unknown") for s in shapes])
-                diagram_context = f"\n\nDIAGRAM DETECTED: Student included geometric shapes: {shape_list}"
-                logger.info(f"Including diagram context: {shape_list}")
+        logger.info(f"Evaluating {subject} Q (max: {max_score} marks)")
         
         try:
-            prompt = self._create_evaluation_prompt(
-                question=question,
-                student_answer=student_answer + diagram_context,
-                textbook_context=self._optimize_context_length(textbook_context),
-                subject=subject,
-                max_score=max_score,
-                class_level=class_level
+            prompt = self._create_prompt(
+                question, student_answer, textbook_context,
+                subject, max_score, class_level, marking_scheme
+            )
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                ),
+            )
+            raw_response = response.text
+            evaluation = self._parse_response(raw_response, max_score)
+            
+            # Calculate confidence
+            confidence = self._calculate_confidence(
+                evaluation, student_answer, rag_scores or [], marking_scheme
             )
             
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert teacher who evaluates student answers and provides constructive feedback in JSON format."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
+            # Apply confidence-based leniency overrides
+            original_score = float(evaluation.get("score", 0))
+            if confidence > 0.65:
+                evaluation["score"] = max_score
+                logger.info(f"Confidence {confidence:.2f} > 0.65: Boosted score from {original_score} to {max_score}")
+            elif confidence > 0.50:
+                boosted_score = max(0, max_score - 1)
+                evaluation["score"] = max(original_score, boosted_score)
+                logger.info(f"Confidence {confidence:.2f} > 0.50: Boosted score from {original_score} to {evaluation['score']}")
+            elif confidence > 0.30:
+                boosted_score = max_score / 2.0
+                evaluation["score"] = max(original_score, boosted_score)
+                logger.info(f"Confidence {confidence:.2f} > 0.30: Boosted score from {original_score} to {evaluation['score']}")
+            elif confidence > 0.20:
+                boosted_score = max(0, (max_score / 2.0) - 1.0) # Gives less than half mark
+                evaluation["score"] = max(original_score, boosted_score)
+                logger.info(f"Confidence {confidence:.2f} > 0.20: Boosted score from {original_score} to {evaluation['score']}")
             
-            raw_response = response.choices[0].message.content
-            evaluation = self._parse_evaluation_response(raw_response, max_score)
-            
+            evaluation["confidence"] = confidence
             evaluation["metadata"] = {
-                "model": self.model,
-                "tokens_used": getattr(response.usage, 'total_tokens', 0),
-                "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
-                "completion_tokens": getattr(response.usage, 'completion_tokens', 0)
+                "model": self.model_name,
+                "provider": "google",
+                "confidence": confidence
             }
             
-            logger.info(f"Evaluation complete. Score: {evaluation['score']}/{max_score}")
+            logger.info(f"✅ Score: {evaluation['score']}/{max_score}, Confidence: {confidence:.2f}")
             return evaluation
             
         except Exception as e:
-            logger.error(f"Error during evaluation: {str(e)}")
+            logger.error(f"❌ Gemini evaluation failed: {e}")
             return self._create_fallback_evaluation(max_score, str(e))
     
-    def evaluate_answer_with_retry(
-        self,
-        question: str,
-        student_answer: str,
-        textbook_context: str,
-        subject: str,
-        max_score: int = 10,
-        max_retries: int = 2
-    ) -> Dict:
-        """Evaluate with retry logic for local LLM failures"""
+    def _create_prompt(self, question, student_answer, textbook_context, 
+                      subject, max_score, class_level, marking_scheme):
+        """Create evaluation prompt"""
         
-        for attempt in range(max_retries + 1):
-            try:
-                evaluation = self.evaluate_answer(
-                    question=question,
-                    student_answer=student_answer,
-                    textbook_context=textbook_context,
-                    subject=subject,
-                    max_score=max_score
-                )
-                
-                if self._validate_evaluation(evaluation, max_score):
-                    return evaluation
-                else:
-                    logger.warning(f"Invalid evaluation on attempt {attempt + 1}")
-                    if attempt == max_retries:
-                        return self._create_fallback_evaluation(max_score, "Max retries exceeded")
-                        
-            except Exception as e:
-                logger.error(f"Evaluation attempt {attempt + 1} failed: {str(e)}")
-                if attempt == max_retries:
-                    return self._create_fallback_evaluation(max_score, str(e))
-                
-                import time
-                time.sleep(1)
+        correctness = int(max_score * 0.5)
+        completeness = int(max_score * 0.3)
+        understanding = max_score - correctness - completeness
         
-        return self._create_fallback_evaluation(max_score, "All retry attempts failed")
-    
-    def evaluate_answer_sheet_with_progress(
-        self,
-        questions_data: List[Dict],
-        subject: str,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> Dict:
-        """
-        Evaluate with progress callbacks for UI updates.
+        marking_text = ""
+        if marking_scheme:
+            marking_text = "\n\nMARKING SCHEME:\n"
+            for item in marking_scheme.get("breakdown", []):
+                marking_text += f"- {item['point']} ({item['marks']} mark)\n"
+            if "keywords" in marking_scheme:
+                marking_text += f"\nKeywords: {', '.join(marking_scheme['keywords'])}\n"
         
-        Args:
-            questions_data: List of question dicts
-            subject: Subject name
-            progress_callback: Function called with (current, total) after each question
-        """
+        return f"""You are a very lenient and supportive CBSE Class {class_level} {subject} teacher.
         
-        evaluations = []
-        total = len(questions_data)
-        
-        for idx, q_data in enumerate(questions_data, 1):
-            evaluation = self.evaluate_answer_with_retry(
-                question=q_data['question_text'],
-                student_answer=q_data['student_answer'],
-                textbook_context=q_data['textbook_context'],
-                subject=subject,
-                max_score=q_data.get('max_score', 10)
-            )
-            
-            evaluation['question_number'] = q_data['question_number']
-            evaluation['question_text'] = q_data['question_text']
-            evaluation['student_answer'] = q_data['student_answer']
-            evaluations.append(evaluation)
-            
-            if progress_callback:
-                progress_callback(idx, total)
-        
-        total_score = sum(e['score'] for e in evaluations)
-        max_possible = sum(e.get('max_score', 10) for e in evaluations)
-        percentage = (total_score / max_possible * 100) if max_possible > 0 else 0
-        
-        summary = self._generate_overall_summary(evaluations, subject, percentage)
-        
-        return {
-            "evaluations": evaluations,
-            "overall_score": total_score,
-            "max_possible_score": max_possible,
-            "percentage": round(percentage, 2),
-            "total_questions": total,
-            "summary": summary
-        }
-    
-    def batch_evaluate(
-        self,
-        questions_answers: List[Dict],
-        subject: str,
-        class_level: str = "10",
-        max_score: int = 10
-    ) -> Dict:
-        """Evaluate multiple answers in batch"""
-        results = []
-        
-        for idx, qa in enumerate(questions_answers, 1):
-            logger.info(f"Evaluating question {idx}/{len(questions_answers)}")
-            
-            evaluation = self.evaluate_answer(
-                question=qa["question"],
-                student_answer=qa["student_answer"],
-                textbook_context=qa.get("textbook_context", ""),
-                subject=subject,
-                class_level=class_level,
-                max_score=max_score
-            )
-            
-            evaluation["question_number"] = idx
-            results.append(evaluation)
-        
-        total_score = sum(r["score"] for r in results)
-        max_total = max_score * len(questions_answers)
-        
-        return {
-            "evaluations": results,
-            "summary": {
-                "total_questions": len(questions_answers),
-                "total_score": total_score,
-                "max_total_score": max_total,
-                "percentage": round((total_score / max_total) * 100, 2) if max_total > 0 else 0
-            }
-        }
-    
-    def evaluate_answer_sheet(
-        self,
-        questions_data: List[Dict],
-        subject: str
-    ) -> Dict:
-        """
-        Evaluate multiple questions from an answer sheet.
-        
-        For local LLM (Llama 3.2:3b), we evaluate questions sequentially
-        rather than in a single batch to avoid context length issues.
-        
-        Args:
-            questions_data: List of dicts with keys:
-                - question_number: int
-                - question_text: str
-                - student_answer: str
-                - textbook_context: str (from RAG)
-                - max_score: int (optional, default 10)
-            subject: Subject name
-        
-        Returns:
-            Dict with overall results and individual evaluations
-        """
-        
-        logger.info(f"Starting batch evaluation for {len(questions_data)} questions")
-        
-        evaluations = []
-        total_score = 0
-        max_possible_score = 0
-        
-        for idx, q_data in enumerate(questions_data, 1):
-            try:
-                logger.info(f"Evaluating question {idx}/{len(questions_data)}")
-                
-                max_score = q_data.get('max_score', 10)
-                
-                evaluation = self.evaluate_answer(
-                    question=q_data['question_text'],
-                    student_answer=q_data['student_answer'],
-                    textbook_context=q_data['textbook_context'],
-                    subject=subject,
-                    max_score=max_score
-                )
-                
-                evaluation['question_number'] = q_data['question_number']
-                evaluation['question_text'] = q_data['question_text']
-                evaluation['student_answer'] = q_data['student_answer']
-                evaluation['max_score'] = max_score
-                
-                evaluations.append(evaluation)
-                
-                total_score += evaluation['score']
-                max_possible_score += max_score
-                
-            except Exception as e:
-                logger.error(f"Error evaluating question {idx}: {str(e)}")
-                fallback = self._create_fallback_evaluation(q_data.get('max_score', 10), str(e))
-                fallback['question_number'] = q_data['question_number']
-                fallback['question_text'] = q_data['question_text']
-                fallback['student_answer'] = q_data['student_answer']
-                evaluations.append(fallback)
-        
-        percentage = (total_score / max_possible_score * 100) if max_possible_score > 0 else 0
-        overall_summary = self._generate_overall_summary(evaluations, subject, percentage)
-        
-        return {
-            "evaluations": evaluations,
-            "overall_score": total_score,
-            "max_possible_score": max_possible_score,
-            "percentage": round(percentage, 2),
-            "total_questions": len(questions_data),
-            "summary": overall_summary
-        }
-    
-    def _parse_evaluation_response(self, raw_response: str, max_score: int) -> Dict:
-        """Parse LLM response and extract JSON"""
-        
-        try:
-            json_start = raw_response.find('{')
-            json_end = raw_response.rfind('}') + 1
-            
-            if json_start != -1 and json_end > json_start:
-                json_str = raw_response[json_start:json_end]
-                evaluation = json.loads(json_str)
-                
-                if self._validate_evaluation(evaluation, max_score):
-                    return evaluation
-                else:
-                    logger.warning("Invalid evaluation structure, using fallback")
-                    return self._create_fallback_evaluation(max_score, "Invalid structure")
-            else:
-                logger.warning("No JSON found in response")
-                return self._create_fallback_evaluation(max_score, "No JSON found")
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error: {str(e)}")
-            return self._create_fallback_evaluation(max_score, str(e))
-    
-    def _validate_evaluation(self, evaluation: Dict, max_score: int) -> bool:
-        """Validate evaluation structure and content"""
-        
-        required_fields = [
-            'score', 'score_breakdown', 'correct_points', 'errors',
-            'missing_concepts', 'correct_answer_should_include',
-            'improvement_guidance', 'overall_feedback'
-        ]
-        
-        if not all(field in evaluation for field in required_fields):
-            return False
-        
-        if not (0 <= evaluation['score'] <= max_score):
-            return False
-        
-        breakdown = evaluation.get('score_breakdown', {})
-        if not all(key in breakdown for key in ['correctness', 'completeness', 'understanding']):
-            return False
-        
-        return True
-    
-    def _validate_and_fix_evaluation(self, evaluation: Dict, max_score: int) -> Dict:
-        """Validate and fix evaluation structure"""
-        if "score" not in evaluation:
-            evaluation["score"] = max_score // 2
-        
-        evaluation["score"] = min(max(0, evaluation["score"]), max_score)
-        
-        if "score_breakdown" not in evaluation:
-            evaluation["score_breakdown"] = {
-                "correctness": 0,
-                "completeness": 0,
-                "understanding": 0
-            }
-        
-        if "correct_points" not in evaluation:
-            evaluation["correct_points"] = []
-        
-        if "errors" not in evaluation:
-            evaluation["errors"] = []
-        
-        if "missing_concepts" not in evaluation:
-            evaluation["missing_concepts"] = []
-        
-        if "correct_answer_should_include" not in evaluation:
-            evaluation["correct_answer_should_include"] = []
-        
-        if "improvement_guidance" not in evaluation:
-            evaluation["improvement_guidance"] = []
-        
-        if "overall_feedback" not in evaluation:
-            evaluation["overall_feedback"] = "Evaluation completed."
-        
-        return evaluation
-    
-    def _create_fallback_evaluation(self, max_score: int, error_msg: str) -> Dict:
-        """Create fallback evaluation if LLM fails"""
-        
-        return {
-            "score": max_score // 2,
-            "score_breakdown": {
-                "correctness": (max_score // 2) // 2,
-                "completeness": (max_score // 2) // 3,
-                "understanding": (max_score // 2) - (max_score // 2) // 2 - (max_score // 2) // 3
-            },
-            "correct_points": ["Unable to analyze answer automatically"],
-            "errors": [
-                {
-                    "what": "Automatic evaluation failed",
-                    "why": error_msg,
-                    "impact": "Manual review recommended"
-                }
-            ],
-            "missing_concepts": ["Manual review needed"],
-            "correct_answer_should_include": ["Please review textbook material"],
-            "improvement_guidance": [
-                {
-                    "suggestion": "Manual review by teacher recommended",
-                    "resource": "Refer to relevant textbook chapters",
-                    "practice": "Practice more questions on this topic"
-                }
-            ],
-            "overall_feedback": "This answer requires manual teacher review for accurate evaluation.",
-            "metadata": {
-                "error": True,
-                "error_message": error_msg
-            }
-        }
-    
-    def _create_evaluation_prompt(
-        self,
-        question: str,
-        student_answer: str,
-        textbook_context: str,
-        subject: str,
-        max_score: int,
-        class_level: str = "12"
-    ) -> str:
-        """Create optimized prompt for Llama 3.1"""
-        
-        correctness_points = int(max_score * 0.5)
-        completeness_points = int(max_score * 0.3)
-        understanding_points = max_score - correctness_points - completeness_points
-        
-        prompt = f"""You are a {subject} teacher evaluating a Class {class_level} CBSE student's answer.
+Goal: Help the student succeed. If the student shows even a partial understanding or mentions relevant keywords, be generous with marks. 
 
 QUESTION:
 {question}
+{marking_text}
 
-TEXTBOOK REFERENCE:
+REFERENCE:
 {textbook_context}
 
-STUDENT'S ANSWER:
+STUDENT ANSWER:
 {student_answer}
 
-TASK:
-Evaluate the student's answer and provide detailed feedback.
-
-SCORING (Total: {max_score} points):
-- Correctness: {correctness_points} points (accuracy of facts)
-- Completeness: {completeness_points} points (all key points covered)
-- Understanding: {understanding_points} points (conceptual clarity)
-
-OUTPUT FORMAT:
-Provide your evaluation as a JSON object with this EXACT structure:
+Evaluate and return ONLY valid JSON:
 
 {{
-  "score": <number between 0 and {max_score}>,
-  "score_breakdown": {{
-    "correctness": <0 to {correctness_points}>,
-    "completeness": <0 to {completeness_points}>,
-    "understanding": <0 to {understanding_points}>
-  }},
-  "correct_points": [
-    "Point 1 the student got correct",
-    "Point 2 the student got correct"
-  ],
-  "errors": [
-    {{
-      "what": "Specific error description",
-      "why": "Why this is incorrect",
-      "impact": "How this affects understanding"
-    }}
-  ],
-  "missing_concepts": [
-    "Key concept 1 not mentioned",
-    "Key concept 2 not mentioned"
-  ],
-  "correct_answer_should_include": [
-    "Essential point 1",
-    "Essential point 2",
-    "Essential point 3"
-  ],
-  "improvement_guidance": [
-    {{
-      "suggestion": "Specific improvement action",
-      "resource": "Textbook chapter/page reference",
-      "practice": "Practice recommendation"
-    }}
-  ],
-  "overall_feedback": "Brief encouraging summary in 1-2 sentences"
+  "score": <0-{max_score}>,
+  "score_breakdown": {{"correctness": <0-{correctness}>, "completeness": <0-{completeness}>, "understanding": <0-{understanding}>}},
+  "correct_points": ["What they got right"],
+  "errors": [{{"what": "mistake", "why": "reason", "impact": "minor reduction"}}],
+  "missing_concepts": ["Concepts to review"],
+  "correct_answer_should_include": ["Expected points"],
+  "improvement_guidance": [{{"suggestion": "Encouraging tip", "resource": "Chapter", "practice": "Exercise"}}],
+  "overall_feedback": "Helpful, lenient summary."
 }}
 
-IMPORTANT:
-- Respond ONLY with the JSON object
-- Do not include any text before or after the JSON
-- Ensure all scores sum correctly
-- Be constructive and specific in feedback
-- Reference the textbook content provided above
-
-JSON Response:"""
-        
-        return prompt
+Return ONLY the JSON, no other text."""
     
-    def _get_subject_specific_instructions(self, subject: str) -> str:
-        """Get subject-specific evaluation guidelines"""
-        
-        if subject.lower() == "science":
-            return """
-For Science answers, focus on:
-- Correct terminology and definitions
-- Accurate processes and mechanisms
-- Correct chemical equations/formulas (if applicable)
-- Understanding of cause and effect
-- Real-world applications mentioned
-"""
-        elif subject.lower() == "mathematics":
-            return """
-For Mathematics answers, focus on:
-- Correct formula usage
-- Proper mathematical steps shown
-- Accurate calculations
-- Correct final answer
-- Clear reasoning and logic
-"""
-        else:
-            return ""
+    def _parse_response(self, text: str, max_score: int) -> Dict:
+        """Parse Gemini response"""
+        try:
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            if start != -1 and end > start:
+                json_str = text[start:end]
+                evaluation = json.loads(json_str)
+                
+                # Validate
+                if 0 <= evaluation.get('score', -1) <= max_score:
+                    return evaluation
+            
+            return self._create_fallback_evaluation(max_score, "Invalid JSON")
+        except Exception as e:
+            logger.error(f"Parse error: {e}")
+            return self._create_fallback_evaluation(max_score, str(e))
     
-    def _generate_overall_summary(self, evaluations: List[Dict], subject: str, percentage: float) -> Dict:
-        """Generate overall performance summary"""
+    def _calculate_confidence(self, evaluation, student_answer, rag_scores, marking_scheme):
+        """Calculate confidence score"""
+        factors = []
         
-        all_correct_points = []
-        all_errors = []
-        all_missing_concepts = []
-        
-        for eval in evaluations:
-            all_correct_points.extend(eval.get('correct_points', []))
-            all_errors.extend([e['what'] for e in eval.get('errors', []) if isinstance(e, dict)])
-            all_missing_concepts.extend(eval.get('missing_concepts', []))
-        
-        strengths = self._identify_strengths(all_correct_points, evaluations)
-        areas_for_improvement = self._identify_improvement_areas(all_missing_concepts, all_errors)
-        recommended_practice = self._generate_practice_recommendations(areas_for_improvement, subject)
-        
-        if percentage >= 80:
-            performance_level = "Excellent"
-            message = "Outstanding work! You have demonstrated strong understanding of the concepts."
-        elif percentage >= 60:
-            performance_level = "Good"
-            message = "Good effort! You understand most concepts but there's room for improvement."
-        elif percentage >= 40:
-            performance_level = "Needs Improvement"
-            message = "You have basic understanding but need to strengthen several concepts."
+        # RAG relevance (40%)
+        if rag_scores:
+            factors.append(sum(rag_scores) / len(rag_scores) * 0.4)
         else:
-            performance_level = "Needs Significant Improvement"
-            message = "This topic needs more attention. Please review the textbook and practice more."
+            factors.append(0.2)
         
+        # Answer length (20%)
+        expected_len = evaluation.get('max_score', 10) * 30
+        actual_len = len(student_answer.strip())
+        if actual_len > 0:
+            factors.append(min(actual_len / expected_len, 1.0) * 0.2)
+        
+        # Keywords (20%)
+        if marking_scheme and 'keywords' in marking_scheme:
+            keywords = marking_scheme['keywords']
+            answer_lower = student_answer.lower()
+            found = sum(1 for kw in keywords if kw.lower() in answer_lower)
+            factors.append((found / len(keywords)) * 0.2 if keywords else 0.1)
+        else:
+            factors.append(0.1)
+        
+        # Score consistency (20%)
+        score = evaluation.get('score', 0)
+        breakdown = evaluation.get('score_breakdown', {})
+        if abs(score - sum(breakdown.values())) <= 1:
+            factors.append(0.2)
+        else:
+            factors.append(0.1)
+        
+        return round(min(sum(factors), 1.0), 2)
+    
+    def _create_fallback_evaluation(self, max_score: int, error: str) -> Dict:
+        """Fallback evaluation"""
         return {
-            "performance_level": performance_level,
-            "overall_message": message,
-            "strengths": strengths[:5],
-            "areas_for_improvement": areas_for_improvement[:5],
-            "recommended_practice": recommended_practice
+            "score": max_score // 2,
+            "score_breakdown": {
+                "correctness": max_score // 4,
+                "completeness": max_score // 6,
+                "understanding": max_score // 4
+            },
+            "correct_points": ["Unable to analyze automatically"],
+            "errors": [{"what": "Evaluation failed", "why": error, "impact": "Manual review needed"}],
+            "missing_concepts": ["Manual review required"],
+            "correct_answer_should_include": ["Review textbook"],
+            "improvement_guidance": [{"suggestion": "Manual review", "resource": "Textbook", "practice": "Practice"}],
+            "overall_feedback": "Manual teacher review recommended.",
+            "confidence": 0.3,
+            "metadata": {"error": True, "error_message": error}
         }
-    
-    def _identify_strengths(self, correct_points: List[str], evaluations: List[Dict]) -> List[str]:
-        """Identify student's strengths from correct points"""
-        
-        if not correct_points:
-            return ["Showed effort in attempting the questions"]
-        
-        unique_strengths = list(set([point.strip() for point in correct_points if point.strip()]))
-        
-        return unique_strengths[:5] if len(unique_strengths) > 5 else unique_strengths
-    
-    def _identify_improvement_areas(self, missing_concepts: List[str], errors: List[str]) -> List[str]:
-        """Identify areas needing improvement"""
-        
-        all_issues = missing_concepts + errors
-        
-        if not all_issues:
-            return ["Continue practicing to maintain consistency"]
-        
-        unique_issues = list(set([issue.strip() for issue in all_issues if issue.strip()]))
-        
-        return unique_issues[:5] if len(unique_issues) > 5 else unique_issues
-    
-    def _generate_practice_recommendations(self, improvement_areas: List[str], subject: str) -> List[Dict]:
-        """Generate practice recommendations based on weak areas"""
-        
-        if subject.lower() == "science":
-            return [
-                {
-                    "topic": "Review key concepts",
-                    "action": "Re-read relevant textbook chapters",
-                    "resource": "NCERT Science Textbook - Specific chapters based on questions"
-                },
-                {
-                    "topic": "Practice diagrams",
-                    "action": "Draw and label important diagrams",
-                    "resource": "Practice from textbook exercises"
-                },
-                {
-                    "topic": "Memorize key terms",
-                    "action": "Create flashcards for definitions",
-                    "resource": "Chapter summaries and glossary"
-                }
-            ]
-        elif subject.lower() == "mathematics":
-            return [
-                {
-                    "topic": "Formula practice",
-                    "action": "Write and memorize all relevant formulas",
-                    "resource": "NCERT Math Textbook - Formula sheet"
-                },
-                {
-                    "topic": "Problem solving",
-                    "action": "Solve 10 similar practice problems",
-                    "resource": "Textbook exercises and examples"
-                },
-                {
-                    "topic": "Step-by-step solutions",
-                    "action": "Practice showing all working steps clearly",
-                    "resource": "Solved examples from textbook"
-                }
-            ]
-        
-        return [
-            {
-                "topic": "General practice",
-                "action": "Review textbook and solve practice problems",
-                "resource": "NCERT Textbook exercises"
-            }
-        ]
-    
-    def _optimize_context_length(self, textbook_context: str, max_chars: int = 800) -> str:
-        """
-        Truncate textbook context to fit within token limits.
-        Llama 3.2:3b works best with shorter contexts.
-        """
-        
-        if len(textbook_context) <= max_chars:
-            return textbook_context
-        
-        truncated = textbook_context[:max_chars]
-        last_period = truncated.rfind('.')
-        
-        if last_period > max_chars * 0.7:
-            return truncated[:last_period + 1]
-        else:
-            return truncated + "..."
-

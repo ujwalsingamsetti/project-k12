@@ -12,6 +12,9 @@ class QuestionBase(BaseModel):
     expected_keywords: Optional[List[str]] = None
     options: Optional[dict] = None  # For MCQ
     correct_answer: Optional[str] = None  # For MCQ
+    section: Optional[str] = None  # e.g. 'A', 'B', 'C', 'D', 'E'
+    question_subtype: Optional[str] = None  # 'assertion_reason', 'case_study', etc.
+    has_or_option: Optional[bool] = False  # True if question has OR alternative
 
 class QuestionCreate(QuestionBase):
     pass
@@ -26,11 +29,15 @@ class Question(QuestionBase):
 class QuestionPaperBase(BaseModel):
     title: str
     subject: Subject
-    class_level: int = 12
+    class_level: str = "12"
     total_marks: int
     duration_minutes: int
     instructions: Optional[str] = None
     due_date: Optional[datetime] = None
+    # Exam mode fields
+    is_exam_mode: bool = False
+    exam_start_time: Optional[datetime] = None
+    exam_end_time: Optional[datetime] = None
 
 class QuestionPaperCreate(QuestionPaperBase):
     questions: List[QuestionCreate]
@@ -40,6 +47,7 @@ class QuestionPaper(QuestionPaperBase):
     teacher_id: UUID
     created_at: datetime
     questions: List[Question] = []
+    pdf_path: Optional[str] = None
     
     class Config:
         from_attributes = True

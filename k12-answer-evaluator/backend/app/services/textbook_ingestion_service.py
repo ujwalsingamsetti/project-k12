@@ -15,7 +15,7 @@ class TextbookIngestionService:
         self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
         self.client = QdrantClient(url="http://localhost:6333")
     
-    def ingest_textbook(self, pdf_path: str, subject: str, textbook_id: str, teacher_id: str) -> int:
+    def ingest_textbook(self, pdf_path: str, subject: str, textbook_id: str, teacher_id: str, class_level: str = "") -> int:
         """Ingest PDF textbook into vector database"""
         
         try:
@@ -48,6 +48,7 @@ class TextbookIngestionService:
                     payload={
                         "text": chunk,
                         "subject": subject.lower(),
+                        "class_level": class_level.lower() if class_level else "",
                         "source": os.path.basename(pdf_path),
                         "chunk_index": idx,
                         "textbook_id": textbook_id,

@@ -93,15 +93,19 @@ async def submit_answer(
     import json
     all_paths_json = json.dumps(file_paths)
     
-    # Create submission with first file path (for compatibility)
-    submission = crud_submission.create_submission(db, paper_id, student.id, file_paths[0])
+    # Create submission and immediately mark as evaluating
+    submission = crud_submission.create_submission(db, paper_id, student.id, file_paths[0], uploaded_files=file_paths)
+    crud_submission.update_submission_status(db, submission.id, SubmissionStatus.EVALUATING)
+    db.refresh(submission)
     
     # Process in background
     background_tasks.add_task(process_submission_multiple, submission.id, file_paths, paper_id, db)
     
     return submission
 
-def process_submission_multiple(submission_id: str, image_paths: list, paper_id: str, db: Session):
+def process_submission_multiple(submission_id: str, image_paths: list, paper_id: str, _old_db: Session = None):
+    from app.core.database import SessionLocal
+    db = SessionLocal()
     try:
         # OCR all images and combine text + diagrams
         ocr_service = OCRService()
@@ -139,22 +143,45 @@ def process_submission_multiple(submission_id: str, image_paths: list, paper_id:
         # Get paper questions
         paper = crud_paper.get_paper(db, paper_id)
         
+        # Log question mapping for debugging
+        print(f"\n=== QUESTION IDENTIFICATION ===")
+        print(f"Paper has {len(paper.questions)} questions")
+        print(f"Parsed {len(parsed_answers)} answers from student sheet")
+        print(f"Question numbers in paper: {[q.question_number for q in paper.questions]}")
+        print(f"Question numbers parsed: {list(parsed_answers.keys())}")
+        
         # Evaluate each question
         rag_service = RAGService()
         eval_service = EvaluationService()
         
         for question in paper.questions:
-            student_answer = parsed_answers.get(question.question_number, "")
+            student_answer = parsed_answers.get(question.question_number, "").strip()
             
-            # Check if MCQ
+            # Match question type
             if hasattr(question.question_type, 'value'):
                 q_type = question.question_type.value
             else:
                 q_type = str(question.question_type)
+
+            # Log question matching
+            print(f"\nQ{question.question_number} [{q_type}]: {question.question_text[:80]}...")
+            print(f"Student answer: {student_answer[:100] if student_answer else '(empty branch)'}...")
             
             if q_type == "mcq":
-                # Evaluate MCQ
+                # Evaluate MCQ (simple comparison, no RAG)
                 result = evaluate_mcq(question, student_answer)
+                context_chunks = []
+            elif not student_answer:
+                # Descriptive but empty - award 0 without calling AI
+                result = {
+                    "score": 0,
+                    "score_breakdown": {"correctness": 0, "completeness": 0, "understanding": 0},
+                    "overall_feedback": "Question was not answered.",
+                    "correct_points": [],
+                    "errors": [{"what": "Unanswered", "why": "No text detected", "impact": "0 marks"}],
+                    "missing_concepts": ["Complete explanation"],
+                    "improvement_guidance": [{"suggestion": "Try to solve every question.", "resource": "Revision", "practice": "Mock test"}]
+                }
                 context_chunks = []
             else:
                 # Evaluate descriptive question
@@ -169,11 +196,31 @@ def process_submission_multiple(submission_id: str, image_paths: list, paper_id:
                     if question_shapes:
                         diagram_info = {"has_diagrams": True, "shapes_detected": question_shapes}
                 
+                # Build question paper context
+                qp_context = f"Question {question.question_number} ({question.marks} marks): {question.question_text}"
+                if question.section:
+                    qp_context = f"Section {question.section} - " + qp_context
+                
+                # RAG retrieval with question paper context prioritized
                 context_chunks = rag_service.retrieve_relevant_context(
                     question.question_text,
-                    subject=paper.subject.value
+                    subject=paper.subject.value,
+                    question_paper_context=qp_context,
+                    class_level=str(paper.class_level)
                 )
                 context = rag_service.format_context_for_llm(context_chunks)
+                
+                # Extract RAG scores for confidence calculation
+                rag_scores = [c.get('score', 0) for c in context_chunks if c.get('source') == 'textbook']
+                
+                # Get marking scheme if available
+                marking_scheme = question.marking_scheme if hasattr(question, 'marking_scheme') else None
+                
+                # Log RAG retrieval
+                print(f"RAG retrieved {len(context_chunks)} chunks for Q{question.question_number}")
+                if context_chunks:
+                    print(f"Top chunk score: {context_chunks[0].get('score', 0):.3f}")
+                    print(f"Context preview: {context[:150]}...")
                 
                 result = eval_service.evaluate_answer(
                     question=question.question_text,
@@ -182,7 +229,9 @@ def process_submission_multiple(submission_id: str, image_paths: list, paper_id:
                     subject=paper.subject.value,
                     class_level=str(paper.class_level),
                     max_score=question.marks,
-                    diagram_info=diagram_info
+                    diagram_info=diagram_info,
+                    marking_scheme=marking_scheme,
+                    rag_scores=rag_scores
                 )
             
             # Store evaluation
@@ -197,14 +246,54 @@ def process_submission_multiple(submission_id: str, image_paths: list, paper_id:
                 feedback=json.dumps(result),
                 rag_context=json.dumps(context_chunks)
             )
+            
+            print(f"Q{question.question_number} evaluated: {result.get('score', 0)}/{question.marks} marks")
         
+        print(f"\n=== EVALUATION COMPLETE ===")
         crud_submission.update_submission_status(db, submission_id, SubmissionStatus.EVALUATED)
+
+        # ── Fire "graded" notification to the student ────────────────────────
+        try:
+            from app.models.submission import AnswerSubmission
+            from app.models.question_paper import QuestionPaper
+            from app.utils.notify import create_notification
+            from sqlalchemy import func as _func
+            from app.models.evaluation import Evaluation
+            sub = db.query(AnswerSubmission).filter(AnswerSubmission.id == submission_id).first()
+            if sub:
+                paper_obj = crud_paper.get_paper(db, paper_id)
+                total = db.query(_func.sum(Evaluation.marks_obtained)).filter(
+                    Evaluation.submission_id == submission_id
+                ).scalar() or 0
+                max_m = db.query(_func.sum(Evaluation.max_marks)).filter(
+                    Evaluation.submission_id == submission_id
+                ).scalar() or 1
+                pct = round(float(total) / float(max_m) * 100, 1) if max_m else 0
+                paper_title = paper_obj.title if paper_obj else "your paper"
+                create_notification(
+                    db, str(sub.student_id),
+                    type_="graded",
+                    title=f"✅ {paper_title} has been graded!",
+                    body=f"You scored {total}/{max_m} ({pct}%)",
+                    link=f"/student/submissions/{submission_id}",
+                )
+        except Exception as notify_err:
+            print(f"Notification error (non-fatal): {notify_err}")
         
     except Exception as e:
         print(f"Error processing submission: {e}")
-        crud_submission.update_submission_status(db, submission_id, SubmissionStatus.FAILED)
+        import traceback
+        traceback.print_exc()
+        try:
+            crud_submission.update_submission_status(db, submission_id, SubmissionStatus.FAILED)
+        except:
+            pass
+    finally:
+        db.close()
 
-def process_submission(submission_id: str, image_path: str, paper_id: str, db: Session):
+def process_submission(submission_id: str, image_path: str, paper_id: str, _old_db: Session = None):
+    from app.core.database import SessionLocal
+    db = SessionLocal()
     try:
         # OCR with diagram extraction
         ocr_service = OCRService()
@@ -237,7 +326,8 @@ def process_submission(submission_id: str, image_path: str, paper_id: str, db: S
             # Get RAG context
             context_chunks = rag_service.retrieve_relevant_context(
                 question.question_text,
-                subject=paper.subject.value
+                subject=paper.subject.value,
+                class_level=str(paper.class_level)
             )
             context = rag_service.format_context_for_llm(context_chunks)
             
@@ -269,7 +359,14 @@ def process_submission(submission_id: str, image_path: str, paper_id: str, db: S
         
     except Exception as e:
         print(f"Error processing submission: {e}")
-        crud_submission.update_submission_status(db, submission_id, SubmissionStatus.FAILED)
+        import traceback
+        traceback.print_exc()
+        try:
+            crud_submission.update_submission_status(db, submission_id, SubmissionStatus.FAILED)
+        except:
+            pass
+    finally:
+        db.close()
 
 @router.get("/submissions", response_model=List[Submission])
 def get_my_submissions(
@@ -284,13 +381,62 @@ def get_submission_details(
     db: Session = Depends(get_db),
     student: User = Depends(get_student)
 ):
-    submissions = crud_submission.get_student_submissions(db, student.id)
-    submission_data = next((s for s in submissions if str(s["id"]) == submission_id), None)
+    submission_data = crud_submission.get_submission_details(db, submission_id, student.id)
     
     if not submission_data:
         raise HTTPException(status_code=404, detail="Submission not found")
     
     return submission_data
+
+@router.get("/submissions/{submission_id}/image")
+def get_submission_image(
+    submission_id: str,
+    page: int = 0,
+    db: Session = Depends(get_db),
+    student: User = Depends(get_student)
+):
+    """Serve original uploaded answer sheet image by page index."""
+    submission = crud_submission.get_submission(db, submission_id)
+    if not submission:
+        print(f"IMAGE ERROR: Submission {submission_id} not found")
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if str(submission.student_id) != str(student.id):
+        print(f"IMAGE ERROR: Access denied for {student.id} to {submission_id}")
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    base_path = submission.image_path
+    if not base_path:
+        raise HTTPException(status_code=404, detail="No image found")
+    
+    # Prefer uploaded_files (only the originals the student uploaded)
+    if submission.uploaded_files and isinstance(submission.uploaded_files, list):
+        pages = submission.uploaded_files
+    else:
+        # Legacy fallback: scan folder for matching UUID prefix
+        import glob
+        folder = os.path.dirname(base_path)
+        uuid_prefix = os.path.basename(base_path).split("_page")[0]
+        pattern = os.path.join(folder, f"{uuid_prefix}_page*")
+        pages = sorted(glob.glob(pattern))
+        if not pages:
+            pages = [base_path]
+    
+    # Handle 1-based indexing from frontend (page 1 = index 0)
+    # If page is 0, we treat it as requesting the first page (index 0)
+    page_idx = max(0, page - 1) if page > 0 else 0
+    
+    if page_idx >= len(pages):
+        raise HTTPException(status_code=404, detail=f"Page {page} not found (total: {len(pages)})")
+    
+    target = pages[page_idx]
+    if not os.path.exists(target):
+        raise HTTPException(status_code=404, detail="Image file not found on disk")
+    
+    ext = os.path.splitext(target)[1].lower()
+    mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+             ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+    
+    return FileResponse(target, media_type=mime)
 
 @router.get("/papers/{paper_id}/pdf")
 def get_question_paper_pdf(
@@ -311,3 +457,119 @@ def get_question_paper_pdf(
         media_type="application/pdf",
         filename=f"{paper.title}.pdf"
     )
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 2 – #13: Exam mode paper listing
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/papers/{paper_id}/exam-status")
+def get_exam_status(
+    paper_id: str,
+    db: Session = Depends(get_db),
+    student: User = Depends(get_student)
+):
+    """Returns the live exam window status for a paper."""
+    paper = crud_paper.get_paper(db, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    now = datetime.utcnow()
+    if not paper.is_exam_mode:
+        return {"mode": "practice", "can_submit": True}
+
+    if paper.exam_start_time and now < paper.exam_start_time:
+        return {
+            "mode": "exam", "status": "upcoming",
+            "can_submit": False,
+            "opens_at": paper.exam_start_time.isoformat(),
+            "seconds_until_open": int((paper.exam_start_time - now).total_seconds()),
+        }
+    if paper.exam_end_time and now > paper.exam_end_time:
+        return {
+            "mode": "exam", "status": "closed",
+            "can_submit": False,
+            "closed_at": paper.exam_end_time.isoformat(),
+        }
+    return {
+        "mode": "exam", "status": "live", "can_submit": True,
+        "ends_at": paper.exam_end_time.isoformat() if paper.exam_end_time else None,
+        "seconds_remaining": int((paper.exam_end_time - now).total_seconds()) if paper.exam_end_time else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 2 – #6: Student Progress API
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/progress")
+def get_my_progress(
+    db: Session = Depends(get_db),
+    student: User = Depends(get_student)
+):
+    """
+    Returns a timeline of all evaluated submissions with per-subject aggregation.
+    Used by the student progress dashboard.
+    """
+    from app.models.submission import AnswerSubmission
+    from app.models.question_paper import QuestionPaper
+    from app.models.evaluation import Evaluation
+    from sqlalchemy import func
+
+    # Fetch all evaluated submissions for this student, newest first
+    rows = (
+        db.query(AnswerSubmission, QuestionPaper)
+        .join(QuestionPaper, AnswerSubmission.paper_id == QuestionPaper.id)
+        .filter(
+            AnswerSubmission.student_id == student.id,
+            AnswerSubmission.status == "evaluated"
+        )
+        .order_by(AnswerSubmission.submitted_at.asc())
+        .all()
+    )
+
+    timeline = []
+    subject_buckets = {}  # subject -> list of (pct, submitted_at)
+
+    for sub, paper in rows:
+        total = db.query(func.sum(Evaluation.marks_obtained)).filter(
+            Evaluation.submission_id == sub.id
+        ).scalar() or 0
+        max_m = db.query(func.sum(Evaluation.max_marks)).filter(
+            Evaluation.submission_id == sub.id
+        ).scalar() or 1
+        pct = round((float(total) / float(max_m)) * 100, 1) if max_m else 0
+
+        entry = {
+            "submission_id": str(sub.id),
+            "paper_title": paper.title,
+            "subject": paper.subject.value if hasattr(paper.subject, 'value') else str(paper.subject),
+            "submitted_at": sub.submitted_at.isoformat(),
+            "marks_obtained": float(total),
+            "max_marks": float(max_m),
+            "percentage": pct,
+        }
+        timeline.append(entry)
+
+        subj = entry["subject"]
+        subject_buckets.setdefault(subj, []).append(pct)
+
+    # Per-subject stats
+    subject_stats = []
+    for subj, pcts in subject_buckets.items():
+        subject_stats.append({
+            "subject": subj,
+            "attempts": len(pcts),
+            "average": round(sum(pcts) / len(pcts), 1),
+            "best": round(max(pcts), 1),
+            "trend": "improving" if len(pcts) > 1 and pcts[-1] > pcts[0] else
+                     "declining"  if len(pcts) > 1 and pcts[-1] < pcts[0] else
+                     "stable",
+        })
+
+    return {
+        "total_submissions": len(timeline),
+        "overall_average": round(sum(e["percentage"] for e in timeline) / len(timeline), 1) if timeline else 0,
+        "timeline": timeline,
+        "subject_stats": subject_stats,
+    }

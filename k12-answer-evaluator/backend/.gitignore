@@ -13,4 +13,4 @@ data/textbooks/*
 *.log
 .DS_Store
 
-k12-answer-evaluator/backend/google-vision-credentials.json
+google-vision-credentials.json

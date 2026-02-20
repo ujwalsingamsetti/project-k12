@@ -13,3 +13,7 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def get_db_url():
+    """Get database URL for migrations"""
+    return settings.DATABASE_URL

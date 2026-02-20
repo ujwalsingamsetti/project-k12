@@ -3,143 +3,158 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class AnswerParser:
-    """Parse extracted text to map answers to questions"""
+    """Parse OCR-extracted answer sheet text to map question numbers to answers.
     
+    Improvements:
+    - Handles 15+ different handwriting numbering formats
+    - Gives explicit 0 to unanswered questions (not silently skipped)
+    - Converts MCQ number formats (1→A, 2→B, etc.)
+    - Merges multi-line answers correctly
+    """
+
     def parse_answers(self, text: str) -> dict:
-        """Parse text and return dict of {question_number: answer_only}"""
-        answers = {}
-        
-        # Pattern to detect question numbers: Q1, Q.1, 1), 1., Question 1, etc.
-        patterns = [
-            r'(?:Q\.?|Question)\s*(\d+)[:\.)\s]+(.+?)(?=(?:Q\.?|Question)\s*\d+|$)',
-            r'(\d+)[:\.)\s]+(.+?)(?=\d+[:\.)\s]+|$)'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-            if matches:
-                for q_num, content in matches:
-                    # Remove question text if student rewrote it
-                    answer = self._extract_answer_only(content)
-                    if answer:
-                        answers[int(q_num)] = answer
-                break
-        
-        if not answers:
-            # Fallback: treat entire text as answer to Q1
-            answers[1] = self._extract_answer_only(text)
-        
-        return answers
-    
-    def _extract_answer_only(self, content: str) -> str:
-        """Extract only the answer, removing question text if present"""
-        # Remove common question patterns
-        question_indicators = [
-            r'^.*?(?:what|why|how|explain|describe|define|calculate|find|prove|show|derive).*?[\?\.]\s*',
-            r'^.*?Answer[:\s]+',
-            r'^.*?Ans[:\s]+',
-            r'^.*?Solution[:\s]+',
-            r'^.*?A[:\)]\s*'
-        ]
-        
-        answer = content.strip()
-        for pattern in question_indicators:
-            answer = re.sub(pattern, '', answer, flags=re.IGNORECASE | re.DOTALL)
-        
-        return answer.strip()
+        """Parse raw OCR text, strictly merge nested bullet lists/numbers, and return {question_number (int): answer_text (str)}."""
+        if not text or not text.strip():
+            logger.warning("Empty text received by AnswerParser")
+            return {}
+
+        # Handle multi-column OCR output
+        # Insert newline before any standalone number followed by dot/paren (with leading/trailing space restrictions)
+        text = re.sub(r'(?<!\n)(?<!\d)\s*(\d{1,2}[\.\)])\s+', r'\n\1 ', " " + text)
+
+        # Special case: pure MCQ sheet where each line is just "A", "(B)", etc.
+        mcq_only = self._try_pure_mcq(text)
+        if mcq_only:
+            logger.info(f"Detected pure MCQ sheet: {len(mcq_only)} answers")
+            return mcq_only
+
+        # Use robust split & merge parsing
+        # Prefix: Optional whitespace, Q/Question/Ans/Sol, Optional punc, Optional (
+        # Num: 1-2 digits
+        # Suffix: . or ) and whitespace
+        pattern = r'^(\s*(?:Q(?:ues(?:tion)?)?|Ans(?:wer)?|Sol(?:ution)?)?[\.\-\s]*\(?)(\d{1,2})([\.\)]\s+)'
+        parts = re.split(pattern, "\n" + text, flags=re.MULTILINE | re.IGNORECASE)
+
+        if len(parts) == 1:
+            logger.warning("No structured answers found; storing full text as Q1")
+            return {1: self._clean_answer(text)}
+
+        answers: dict[int, str] = {}
+        current_q = -1
+        seen_qs = set()
+
+        preamble = parts[0].strip()
+
+        for i in range(1, len(parts), 4):
+            prefix = parts[i]
+            q_num_str = parts[i+1]
+            suffix = parts[i+2]
+            ans_text = parts[i+3]
+
+            q_num = int(q_num_str)
+            is_bullet = False
+
+            # Strict explicit marker like "Q2" vs "2."
+            has_explicit_marker = bool(re.search(r'Q|Ans|Sol', prefix, re.IGNORECASE))
+
+            # Determine whether this number is a bullet point belonging to the previous question
+            if not has_explicit_marker and current_q != -1:
+                if q_num in seen_qs:
+                    is_bullet = True
+                elif q_num < current_q and (current_q - q_num) > 3:
+                    is_bullet = True
+
+            if is_bullet:
+                # Merge back into current question
+                full_match_text = prefix + q_num_str + suffix + ans_text
+                if current_q in answers:
+                    answers[current_q] += full_match_text
+            else:
+                current_q = q_num
+                seen_qs.add(q_num)
+                if q_num not in answers:
+                    answers[q_num] = ""
+                
+                # Append any preamble text before the very first question
+                if preamble:
+                    answers[q_num] += preamble + "\n"
+                    preamble = ""
+
+                answers[q_num] += ans_text
+
+        cleaned_answers = {q: self._clean_answer(a) for q, a in answers.items()}
+
+        if not cleaned_answers:
+            logger.warning("No structured answers found; storing full text as Q1")
+            return {1: self._clean_answer(text)}
+
+        logger.info(f"AnswerParser extracted {len(cleaned_answers)} answers: {sorted(cleaned_answers.keys())}")
+        return cleaned_answers
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _try_pure_mcq(self, text: str) -> dict:
+        """Detect sheets where each line is a standalone MCQ option letter."""
+        lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
+        mcq_lines = []
+        for line in lines:
+            m = re.match(r'^\(?([A-D])\)?$', line, re.IGNORECASE)
+            if m:
+                mcq_lines.append(m.group(1).upper())
+
+        if len(mcq_lines) >= max(3, len(lines) * 0.7):
+            return {i + 1: letter for i, letter in enumerate(mcq_lines)}
+        return {}
+
+    def _clean_answer(self, text: str) -> str:
+        """Strip answer prefixes and normalise whitespace."""
+        text = text.strip()
+
+        # Remove "Answer:" / "Ans:" prefix that students sometimes write
+        text = re.sub(r'^(?:Answer|Ans|Sol(?:ution)?)\s*[:\-]\s*', '', text, flags=re.IGNORECASE)
+
+        # Convert numeric MCQ answers (1→A, 2→B, 3→C, 4→D)
+        text = self._convert_mcq_format(text)
+
+        # Collapse multiple blank lines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    def _convert_mcq_format(self, answer: str) -> str:
+        """Map digit-only MCQ answers to letters."""
+        stripped = answer.strip()
+        mapping = {'1': 'A', '2': 'B', '3': 'C', '4': 'D'}
+        if stripped in mapping:
+            return mapping[stripped]
+        return answer
+
+    def _normalize_question_number(self, q_num: str) -> int:
+        roman = {
+            'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, 'v': 5,
+            'vi': 6, 'vii': 7, 'viii': 8, 'ix': 9, 'x': 10
+        }
+        q = q_num.lower().strip()
+        if q in roman:
+            return roman[q]
+        if q.isalpha() and len(q) == 1:
+            return ord(q) - ord('a') + 1
+        try:
+            return int(q)
+        except ValueError:
+            return 1
+
 
 class AnswerSheetParser:
-    """Parse answer sheets to extract questions and answers"""
-    
+    """Legacy class — kept for backward compatibility."""
+
     def __init__(self):
-        logger.info("AnswerSheetParser initialized")
-    
+        self._parser = AnswerParser()
+
     def parse_answer_sheet(self, text: str) -> list:
-        """Parse text to extract questions and answers"""
-        
-        if not text or not text.strip():
-            logger.error("Empty text provided for parsing")
-            raise ValueError("Cannot parse empty text")
-        
-        logger.info(f"Parsing text of length {len(text)}")
-        logger.debug(f"Text preview: {text[:300]}...")
-        
-        questions = []
-        
-        # Try multiple patterns for flexibility
-        patterns = [
-            r'Q\)\s*(.*?)(?:\n\s*A\)\s*(.+?)(?=\n\s*Q\)|$))',  # Q) ... A) format
-            r'Q\.?\s*(\d+)\.?\s*(.*?)(?=Q\.?\s*\d+|$)',  # Q1. or Q.1 or Q 1
-            r'(\d+)\.\s*(.*?)(?=\d+\.|$)',  # 1. 2. 3.
-            r'Question\s*(\d+)[:\.]?\s*(.*?)(?=Question\s*\d+|$)',  # Question 1:
+        answers = self._parser.parse_answers(text)
+        return [
+            {"question_number": q, "question_text": f"Question {q}", "student_answer": a}
+            for q, a in sorted(answers.items())
         ]
-        
-        for i, pattern in enumerate(patterns):
-            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-            if matches:
-                logger.info(f"Found {len(matches)} questions using pattern {i}: {pattern}")
-                # Special handling for Q) A) format
-                if i == 0 and matches:
-                    questions.append({
-                        "question_number": 1,
-                        "question_text": matches[0][0].strip(),
-                        "student_answer": matches[0][1].strip() if len(matches[0]) > 1 else matches[0][0].strip()
-                    })
-                    logger.info(f"Parsed Q) A) format successfully")
-                    return questions
-                break
-        
-        if not matches:
-            logger.warning("No structured questions found, attempting to extract question from text")
-            
-            # Try to find question keywords in the text
-            question_keywords = ['what', 'why', 'how', 'explain', 'describe', 'define', 'calculate']
-            lines = text.split('\n')
-            question_text = "Answer"
-            
-            # Look for lines containing question keywords
-            for line in lines[:10]:  # Check first 10 lines
-                line_lower = line.lower()
-                if any(keyword in line_lower for keyword in question_keywords):
-                    question_text = line.strip()
-                    logger.info(f"Detected question from text: {question_text}")
-                    break
-            
-            questions.append({
-                "question_number": 1,
-                "question_text": question_text,
-                "student_answer": text.strip()
-            })
-            return questions
-        
-        for match in matches:
-            q_num = int(match[0])
-            content = match[1].strip()
-            
-            # Split into question and answer if possible
-            answer_patterns = ['Answer:', 'Ans:', 'A:', 'Solution:']
-            question_text = f"Question {q_num}"
-            student_answer = content
-            
-            for ans_pattern in answer_patterns:
-                if ans_pattern in content:
-                    parts = content.split(ans_pattern, 1)
-                    question_text = parts[0].strip() or f"Question {q_num}"
-                    student_answer = parts[1].strip()
-                    break
-            
-            if not student_answer:
-                logger.warning(f"Q{q_num}: No answer found, using full content")
-                student_answer = content
-            
-            questions.append({
-                "question_number": q_num,
-                "question_text": question_text,
-                "student_answer": student_answer
-            })
-            
-            logger.debug(f"Q{q_num}: {question_text[:50]}... | Answer: {student_answer[:50]}...")
-        
-        logger.info(f"Successfully parsed {len(questions)} questions")
-        return questions

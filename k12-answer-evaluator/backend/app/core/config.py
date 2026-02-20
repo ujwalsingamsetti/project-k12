@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # File Storage
     UPLOAD_DIR: str = "./data/uploads"
     QUESTION_PAPER_DIR: str = "./data/question_papers"
-    MAX_UPLOAD_SIZE: int = 10485760
+    MAX_UPLOAD_SIZE: int = 100 * 1024 * 1024 # 100MB
     
     class Config:
         env_file = ".env"

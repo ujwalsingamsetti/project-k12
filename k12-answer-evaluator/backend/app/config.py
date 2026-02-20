@@ -9,10 +9,11 @@ class Settings(BaseSettings):
     BACKEND_HOST: str = "0.0.0.0"
     BACKEND_PORT: int = 8000
     FRONTEND_URL: str = "http://localhost:3000"
-    DEBUG: bool = False
+    DEBUG: str = "False"
     LOG_LEVEL: str = "INFO"
     
     # LLM Settings
+    GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: str = "not-needed-for-local-llm"
     OPENAI_MODEL: str = "llama3.1:8b"
     OPENAI_BASE_URL: str = "http://localhost:11434/v1"

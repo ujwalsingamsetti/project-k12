@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, DateTime, Text, ForeignKey, Float, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -17,6 +17,11 @@ class Evaluation(Base):
     feedback = Column(Text)
     rag_context = Column(Text)
     evaluated_at = Column(DateTime, default=datetime.utcnow)
+    # Teacher manual override
+    teacher_override = Column(Boolean, default=False)     # True when teacher edited the marks
+    override_marks = Column(Float, nullable=True)         # Teacher-set marks (None = use AI marks)
+    override_feedback = Column(Text, nullable=True)       # Teacher's comment
+    override_at = Column(DateTime, nullable=True)
     
     submission = relationship("AnswerSubmission", back_populates="evaluations")
     question = relationship("Question", back_populates="evaluations")
