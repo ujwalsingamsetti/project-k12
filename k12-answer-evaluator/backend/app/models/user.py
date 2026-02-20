@@ -18,8 +18,10 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     full_name = Column(String, nullable=False)
     role = Column(Enum(UserRole, values_callable=lambda x: [e.value for e in x]), nullable=False)
+    grade = Column(String(20), nullable=True)          # e.g. "Grade 8", "Grade 10"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     textbooks = relationship("Textbook", back_populates="teacher")
     assignments = relationship("StudentAssignment", back_populates="student", foreign_keys="StudentAssignment.student_id")
+

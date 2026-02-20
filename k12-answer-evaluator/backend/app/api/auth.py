@@ -5,7 +5,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, decode_access_token
-from app.schemas.user import UserCreate, UserLogin, Token, User as UserSchema
+from app.schemas.user import UserCreate, UserLogin, Token, User as UserSchema, UpdateProfile
 from app.crud import user as crud_user
 from app.models.user import User
 from datetime import timedelta
@@ -63,4 +63,19 @@ def get_current_user(
 
 @router.get("/me", response_model=UserSchema)
 def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+@router.patch("/profile", response_model=UserSchema)
+def update_profile(
+    data: UpdateProfile,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Allow any authenticated user to update their name and/or grade."""
+    if data.full_name is not None:
+        current_user.full_name = data.full_name.strip()
+    if data.grade is not None:
+        current_user.grade = data.grade.strip() or None
+    db.commit()
+    db.refresh(current_user)
     return current_user

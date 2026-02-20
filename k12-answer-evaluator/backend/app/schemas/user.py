@@ -8,6 +8,7 @@ class UserBase(BaseModel):
     email: EmailStr
     full_name: str
     role: UserRole
+    grade: Optional[str] = None
 
 class UserCreate(UserBase):
     password: str
@@ -33,6 +34,12 @@ class UserResponse(BaseModel):
     email: EmailStr
     full_name: str
     role: UserRole
+    grade: Optional[str] = None
     
     class Config:
         from_attributes = True
+
+class UpdateProfile(BaseModel):
+    full_name: Optional[str] = None
+    grade: Optional[str] = None
+
