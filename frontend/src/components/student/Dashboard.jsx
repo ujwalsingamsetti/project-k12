@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import api, { getAvailablePapers, getMySubmissions } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import Navbar from '../common/Navbar';
 import {
   MdAssignment, MdHistory, MdTrendingUp, MdTrendingDown,
@@ -301,6 +302,8 @@ export default function StudentDashboard() {
     { key: 'submitted', label: 'Evaluation History', icon: <MdHistory />, count: submissions.length },
   ];
 
+  const { user } = useAuth();
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-200">
       <Navbar />
@@ -312,9 +315,16 @@ export default function StudentDashboard() {
             <h1 className="text-4xl font-black text-slate-900 dark:text-slate-100 tracking-tight flex items-center gap-4">
               Learning Hub <span className="w-12 h-1 bg-indigo-600 rounded-full" />
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 font-bold mt-2 uppercase text-[10px] tracking-[0.3em] flex items-center gap-2">
-              <MdSchool className="text-indigo-500" /> Professional Student Suite
-            </p>
+            <div className="flex items-center gap-3 mt-2">
+              <p className="text-slate-500 dark:text-slate-400 font-bold uppercase text-[10px] tracking-[0.3em] flex items-center gap-2">
+                <MdSchool className="text-indigo-500" /> Professional Student Suite
+              </p>
+              {user?.grade && (
+                <span className="text-[10px] font-black uppercase bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-lg border border-indigo-200 dark:border-indigo-800/50">
+                  {user.grade}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-6 px-8 py-4 bg-white/50 dark:bg-slate-800/50 backdrop-blur-xl rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
@@ -330,6 +340,23 @@ export default function StudentDashboard() {
             </div>
           </div>
         </div>
+
+        {!loading && !user?.grade && (
+          <div className="mb-8 bg-amber-50 dark:bg-amber-900/20 border-2 border-dashed border-amber-200 dark:border-amber-800/50 rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-6 animate-in zoom-in-95 duration-500">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-900/50 flex flex-shrink-0 items-center justify-center">
+                <MdInfoOutline size={24} className="text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 dark:text-slate-100">Grade level missing</h3>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">Please update your profile so instructors know your grade.</p>
+              </div>
+            </div>
+            <Link to="/student/profile" className="flex-shrink-0 bg-amber-500 hover:bg-amber-600 text-white font-bold py-3 px-6 rounded-xl transition-colors text-sm shadow-sm">
+              Update Profile
+            </Link>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex flex-col items-center justify-center py-32 gap-6 text-slate-400">
@@ -352,8 +379,8 @@ export default function StudentDashboard() {
                       key={t.key}
                       onClick={() => setTab(t.key)}
                       className={`relative pb-6 text-xs font-black uppercase tracking-widest transition-all ${tab === t.key
-                          ? 'text-indigo-600 dark:text-indigo-400'
-                          : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                        ? 'text-indigo-600 dark:text-indigo-400'
+                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                         }`}
                     >
                       <div className="flex items-center gap-2">

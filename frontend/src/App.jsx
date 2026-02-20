@@ -21,6 +21,7 @@ import Sections from './components/teacher/Sections';
 import StudentDashboard from './components/student/Dashboard';
 import SubmitAnswer from './components/student/SubmitAnswer';
 import ViewResults from './components/student/ViewResults';
+import Profile from './components/student/Profile';
 
 // Shared
 import Leaderboard from './components/common/Leaderboard';
@@ -99,6 +100,14 @@ function App() {
                 element={
                   <ProtectedRoute role="student">
                     <StudentDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/student/profile"
+                element={
+                  <ProtectedRoute role="student">
+                    <Profile />
                   </ProtectedRoute>
                 }
               />
