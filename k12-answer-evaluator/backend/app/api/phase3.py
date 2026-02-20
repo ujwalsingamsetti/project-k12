@@ -161,11 +161,8 @@ def get_leaderboard(
         total = float(row.total or 0)
         pct = round(total / float(max_m) * 100, 1)
 
-        # Students only see their own name; everyone else is "Student #N"
-        if is_teacher or str(row.student_id) == str(me.id):
-            name = student.full_name if student else "Unknown"
-        else:
-            name = f"Student #{rank}"
+        # Everyone sees all names
+        name = student.full_name if student else "Unknown"
 
         is_me = str(row.student_id) == str(me.id)
 

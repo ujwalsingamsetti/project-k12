@@ -131,7 +131,13 @@ export default function ViewResults() {
       if (!res.ok) throw new Error();
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Report_${submissionId.substring(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch {
       toast.error('Could not generate PDF report');
     }
@@ -299,7 +305,7 @@ export default function ViewResults() {
             {submission.evaluations.map((ev) => {
               const feedback = parseFeedback(ev.feedback);
               return (
-                <div key={ev.question_id} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[2.5rem] p-10 shadow-lg dark:shadow-none group overflow-hidden relative transition-all hover:shadow-2xl dark:hover:shadow-indigo-500/5">
+                <div key={ev.id || ev.question_id} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[2.5rem] p-10 shadow-lg dark:shadow-none group overflow-hidden relative transition-all hover:shadow-2xl dark:hover:shadow-indigo-500/5">
                   {/* Score pill in background */}
                   <div className={`absolute top-0 right-0 p-8 opacity-[0.03] group-hover:opacity-[0.08] transition-opacity uppercase font-black text-9xl pointer-events-none ${ev.marks_obtained === ev.max_marks ? 'text-emerald-500' : 'text-slate-500'
                     }`}>

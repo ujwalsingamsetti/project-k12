@@ -5,7 +5,7 @@ import api from '../../services/api';
 import { useToast } from '../../context/ToastContext';
 import {
     MdGroup, MdAdd, MdDelete, MdChevronLeft, MdSave,
-    MdAssignment, MdEvent, MdSearch, MdClose, MdCheckCircle
+    MdAssignment, MdEvent, MdSearch, MdClose, MdCheckCircle, MdPerson
 } from 'react-icons/md';
 import { RiExpandUpDownLine } from 'react-icons/ri';
 import { BiLoaderAlt } from 'react-icons/bi';

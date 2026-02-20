@@ -210,7 +210,7 @@ function SubmissionRow({ sub, paperId }) {
                   .slice()
                   .sort((a, b) => a.question_number - b.question_number)
                   .map(ev => (
-                    <div key={ev.question_id} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[2rem] p-6 shadow-sm flex flex-col md:flex-row gap-6">
+                    <div key={ev.id || ev.question_id} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[2rem] p-6 shadow-sm flex flex-col md:flex-row gap-6">
                       <div className="shrink-0 flex flex-col items-center justify-center w-24 border-r border-slate-50 dark:border-slate-700 pr-6">
                         <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Q {ev.question_number}</span>
                         <div className="flex items-baseline gap-0.5">
