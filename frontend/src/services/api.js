@@ -9,9 +9,9 @@ const api = axios.create({
   },
 });
 
-// Add token to requests
+// Add token to requests (check both localStorage and sessionStorage)
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem('token') || sessionStorage.getItem('token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -25,13 +25,11 @@ export const getMe = () => api.get('/auth/me');
 
 // Teacher
 export const createPaper = (data) => api.post('/teacher/papers', data);
+export const updatePaper = (id, data) => api.put(`/teacher/papers/${id}`, data);
 export const createPaperFromImage = (files, title, subject, duration) => {
   const formData = new FormData();
-  // Support multiple files
   if (Array.isArray(files)) {
-    files.forEach((file) => {
-      formData.append('files', file);
-    });
+    files.forEach((file) => formData.append('files', file));
   } else {
     formData.append('files', files);
   }
@@ -42,15 +40,27 @@ export const createPaperFromImage = (files, title, subject, duration) => {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
 };
+export const extractQuestionsFromImage = (files) => {
+  const formData = new FormData();
+  if (Array.isArray(files)) {
+    files.forEach((file) => formData.append('files', file));
+  } else {
+    formData.append('files', files);
+  }
+  return api.post('/teacher/extract-questions', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
 export const getMyPapers = () => api.get('/teacher/papers');
 export const getPaper = (id) => api.get(`/teacher/papers/${id}`);
 export const getPaperSubmissions = (id) => api.get(`/teacher/papers/${id}/submissions`);
 export const deletePaper = (id) => api.delete(`/teacher/papers/${id}`);
-export const uploadTextbook = (file, title, subject) => {
+export const uploadTextbook = (file, title, subject, class_level) => {
   const formData = new FormData();
   formData.append('file', file);
   if (title) formData.append('title', title);
   if (subject) formData.append('subject', subject);
+  if (class_level) formData.append('class_level', class_level);
   return api.post('/teacher/textbooks', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
@@ -81,8 +91,8 @@ export const submitAnswer = (paperId, files) => {
 };
 export const getMySubmissions = () => api.get('/student/submissions');
 export const getSubmissionDetails = (id) => api.get(`/student/submissions/${id}`);
-export const getSubmissionImage = (imagePath) => {
-  return `http://localhost:8000/uploads/${imagePath}`;
+export const getSubmissionImage = (submissionId, page = 1) => {
+  return `${API_URL}/student/submissions/${submissionId}/image?page=${page}`;
 };
 
 export default api;

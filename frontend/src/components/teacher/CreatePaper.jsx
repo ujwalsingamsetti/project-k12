@@ -1,22 +1,35 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createPaper, createPaperFromImage } from '../../services/api';
+import { createPaper, extractQuestionsFromImage } from '../../services/api';
 import Navbar from '../common/Navbar';
+import { useToast } from '../../context/ToastContext';
+import {
+  MdAdd, MdDelete, MdCloudUpload, MdEditNote, MdCheckCircle,
+  MdToggleOn, MdToggleOff, MdAccessTime, MdInfoOutline,
+  MdFormatListNumbered, MdList, MdRadioButtonChecked, MdClose,
+  MdOutlineDescription, MdSchool, MdArrowForward
+} from 'react-icons/md';
+import { BiLoaderAlt, BiExpandAlt } from 'react-icons/bi';
 
 export default function CreatePaper() {
   const navigate = useNavigate();
+  const toast = useToast();
   const [mode, setMode] = useState('manual'); // 'manual' or 'image'
   const [formData, setFormData] = useState({
     title: '',
     subject: 'science',
+    class_level: '12',
     total_marks: 0,
     duration_minutes: 60,
     instructions: '',
+    is_exam_mode: false,
+    exam_start_time: '',
+    exam_end_time: '',
   });
   const [questions, setQuestions] = useState([
     { question_number: 1, question_text: '', question_type: 'short', marks: 5 },
   ]);
-  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadFiles, setUploadFiles] = useState([]);
 
@@ -35,8 +48,7 @@ export default function CreatePaper() {
   const updateQuestion = (index, field, value) => {
     const updated = [...questions];
     updated[index][field] = value;
-    
-    // Handle MCQ options
+
     if (field === 'question_type' && value === 'mcq') {
       updated[index].options = { A: '', B: '', C: '', D: '' };
       updated[index].correct_answer = 'A';
@@ -45,17 +57,19 @@ export default function CreatePaper() {
       delete updated[index].options;
       delete updated[index].correct_answer;
     }
-    
-    // Handle marks field to prevent NaN
+
     if (field === 'marks') {
       updated[index][field] = parseInt(value) || 0;
     }
-    
+
     setQuestions(updated);
   };
 
   const updateMCQOption = (index, option, value) => {
     const updated = [...questions];
+    if (!updated[index].options) {
+      updated[index].options = { A: '', B: '', C: '', D: '' };
+    }
     updated[index].options[option] = value;
     setQuestions(updated);
   };
@@ -66,13 +80,23 @@ export default function CreatePaper() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
-    const totalMarks = questions.reduce((sum, q) => sum + parseInt(q.marks), 0);
+    setLoading(true);
+    const totalMarks = questions.reduce((sum, q) => sum + (parseInt(q.marks) || 0), 0);
+    const payload = {
+      ...formData,
+      total_marks: totalMarks,
+      questions,
+      exam_start_time: formData.is_exam_mode && formData.exam_start_time ? new Date(formData.exam_start_time).toISOString() : null,
+      exam_end_time: formData.is_exam_mode && formData.exam_end_time ? new Date(formData.exam_end_time).toISOString() : null,
+    };
     try {
-      await createPaper({ ...formData, total_marks: totalMarks, questions });
+      await createPaper(payload);
+      toast.success('Question paper created successfully!');
       navigate('/teacher');
     } catch (error) {
-      setError('Failed to create paper');
+      toast.error('Failed to create paper. Please check all fields.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -81,17 +105,16 @@ export default function CreatePaper() {
     if (files.length === 0) return;
 
     setUploading(true);
-    setError('');
-
     try {
-      const res = await createPaperFromImage(files, formData.title, formData.subject, formData.duration_minutes);
-      alert(`Paper created successfully! ${res.data.questions_count} questions extracted. ${res.data.diagrams_detected || 0} diagrams detected.`);
-      navigate('/teacher');
+      const res = await extractQuestionsFromImage(files);
+      setQuestions(res.data.questions);
+      setMode('manual');
+      toast.success(`OCR Successful! Extracted ${res.data.questions_count} questions.`);
     } catch (error) {
-      setError('Failed to process file(s). Please ensure images/PDF are clear and contain question numbers with marks.');
+      toast.error('Failed to process file(s). Ensure text is clear.');
     } finally {
       setUploading(false);
-      e.target.value = '';
+      if (e.target) e.target.value = '';
     }
   };
 
@@ -104,266 +127,388 @@ export default function CreatePaper() {
     setUploadFiles(uploadFiles.filter((_, i) => i !== index));
   };
 
+  const totalMarks = questions.reduce((sum, q) => sum + (parseInt(q.marks) || 0), 0);
+
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors">
       <Navbar />
-      <div className="max-w-4xl mx-auto px-4 py-8">
-        <h1 className="text-2xl font-semibold text-slate-900 mb-8">Create Question Paper</h1>
-        
-        {/* Mode Selection */}
-        <div className="flex gap-4 mb-6 border-b border-slate-200">
-          <button
-            onClick={() => setMode('manual')}
-            className={`pb-3 px-1 font-medium transition ${
-              mode === 'manual'
-                ? 'text-slate-900 border-b-2 border-slate-900'
-                : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Manual Entry
-          </button>
-          <button
-            onClick={() => setMode('image')}
-            className={`pb-3 px-1 font-medium transition ${
-              mode === 'image'
-                ? 'text-slate-900 border-b-2 border-slate-900'
-                : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Upload Question Paper
-          </button>
-        </div>
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
-            {error}
+      <div className="max-w-5xl mx-auto px-4 py-12 page-enter">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-10">
+          <div>
+            <h1 className="text-4xl font-extrabold text-slate-900 dark:text-slate-100 tracking-tight">Create Paper</h1>
+            <p className="text-slate-500 dark:text-slate-400 font-medium mt-2">Design your assessment manually or upload an existing sheet</p>
           </div>
-        )}
+          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-1.5 rounded-2xl flex gap-1 shadow-sm">
+            <button
+              onClick={() => setMode('manual')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-sm transition-all ${mode === 'manual'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none'
+                : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'
+                }`}
+            >
+              <MdEditNote size={20} /> Manual Entry
+            </button>
+            <button
+              onClick={() => setMode('image')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold text-sm transition-all ${mode === 'image'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none'
+                : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'
+                }`}
+            >
+              <MdCloudUpload size={20} /> Smart Upload
+            </button>
+          </div>
+        </div>
 
         {mode === 'image' ? (
-          <div className="bg-white border border-slate-200 rounded-xl p-6">
-            <div className="grid md:grid-cols-2 gap-4 mb-6">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Title</label>
+          <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl border border-slate-200 dark:border-slate-700 rounded-3xl p-10 shadow-2xl dark:shadow-none animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="grid md:grid-cols-3 gap-6 mb-10">
+              <div className="md:col-span-2">
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1 flex items-center gap-2">
+                  <MdOutlineDescription className="text-indigo-500" /> Paper Title
+                </label>
                 <input
                   type="text"
                   value={formData.title}
                   onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                  placeholder="Optional"
+                  className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium"
+                  placeholder="e.g. Science Mid-Term Exam"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1 flex items-center gap-2">
+                  <MdSchool className="text-indigo-500" /> Subject
+                </label>
                 <select
                   value={formData.subject}
                   onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
+                  className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-bold appearance-none cursor-pointer"
                 >
-                  <option value="science">Science</option>
-                  <option value="mathematics">Mathematics</option>
+                  <optgroup label="Sciences">
+                    <option value="science">General Science</option>
+                    <option value="physics">Physics</option>
+                    <option value="chemistry">Chemistry</option>
+                  </optgroup>
+                  <optgroup label="Mathematics">
+                    <option value="mathematics">Mathematics</option>
+                  </optgroup>
+                  <optgroup label="Languages">
+                    <option value="english">English</option>
+                    <option value="hindi">Hindi</option>
+                  </optgroup>
+                  <option value="general">Other / General</option>
                 </select>
               </div>
             </div>
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-slate-700 mb-1">Duration (minutes)</label>
-              <input
-                type="number"
-                value={formData.duration_minutes}
-                onChange={(e) => setFormData({ ...formData, duration_minutes: parseInt(e.target.value) || 60 })}
-                className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-              />
-            </div>
-            <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center">
-              <p className="text-slate-600 mb-2">Upload question paper images or PDF</p>
-              <p className="text-sm text-slate-500 mb-4">Supported: JPG, PNG, PDF. Multiple pages supported. Format: "Q1. Question text [5 marks]"</p>
-              
-              {uploadFiles.length > 0 && (
-                <div className="mb-4 space-y-2">
+
+            <div className="border-4 border-dashed border-slate-100 dark:border-slate-700 rounded-3xl p-16 text-center flex flex-col items-center group hover:border-indigo-200 dark:hover:border-indigo-900 transition-colors">
+              <div className="w-24 h-24 bg-indigo-50 dark:bg-indigo-900/30 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 mb-6 group-hover:scale-110 transition-transform duration-300">
+                <MdCloudUpload size={48} />
+              </div>
+              <p className="text-2xl font-black text-slate-900 dark:text-slate-100 mb-2">Drop your paper files</p>
+              <p className="text-slate-500 dark:text-slate-400 font-medium mb-8 max-w-sm">We'll use AI to automatically extract questions and marks for you.</p>
+
+              {uploadFiles.length > 0 ? (
+                <div className="w-full max-w-md space-y-3 mb-8">
                   {uploadFiles.map((file, idx) => (
-                    <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded">
-                      <span className="text-sm text-slate-700">{file.name}</span>
+                    <div key={idx} className="flex items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-4 rounded-2xl shadow-sm">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <MdOutlineDescription className="text-indigo-500 shrink-0" size={24} />
+                        <span className="text-sm font-bold text-slate-700 dark:text-slate-300 truncate">{file.name}</span>
+                      </div>
                       <button
                         type="button"
                         onClick={() => removeFile(idx)}
-                        className="text-red-600 hover:text-red-700 text-sm"
+                        className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
                       >
-                        Remove
+                        <MdClose size={20} />
                       </button>
                     </div>
                   ))}
+                  <div className="flex gap-4">
+                    <label className="flex-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 py-4 rounded-2xl font-bold transition-all cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-600">
+                      Add More
+                      <input type="file" accept="image/*,.pdf" multiple onChange={handleFileSelect} className="hidden" />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={(e) => handleImageUpload({ target: { files: uploadFiles, value: '' } })}
+                      disabled={uploading}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-100 dark:shadow-none transition-all flex items-center justify-center gap-2"
+                    >
+                      {uploading ? <BiLoaderAlt className="animate-spin" size={24} /> : (
+                        <>
+                          <span>Process & Extract</span>
+                          <MdArrowForward size={20} />
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
-              )}
-              
-              <div className="flex gap-3 justify-center">
-                <label className="inline-block bg-slate-900 text-white px-6 py-2.5 rounded-lg hover:bg-slate-800 transition font-medium cursor-pointer">
-                  Choose Files
+              ) : (
+                <label className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-10 py-4 rounded-2xl font-black shadow-xl shadow-indigo-100 dark:shadow-none transition-all cursor-pointer transform active:scale-95">
+                  Browse Files
                   <input type="file" accept="image/*,.pdf" multiple onChange={handleFileSelect} className="hidden" />
                 </label>
-                
-                {uploadFiles.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      const fakeEvent = { target: { files: uploadFiles, value: '' } };
-                      handleImageUpload(fakeEvent);
-                    }}
-                    disabled={uploading}
-                    className="bg-green-600 text-white px-6 py-2.5 rounded-lg hover:bg-green-700 transition font-medium disabled:opacity-50"
-                  >
-                    {uploading ? 'Processing...' : 'Upload & Extract'}
-                  </button>
-                )}
+              )}
+
+              <div className="flex items-center gap-6 mt-6">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 capitalize bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-full">JPG</span>
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 capitalize bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-full">PNG</span>
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 capitalize bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-full">PDF</span>
               </div>
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="bg-white border border-slate-200 rounded-xl p-6 space-y-6">
-            <div className="grid md:grid-cols-2 gap-4">
+          <form onSubmit={handleSubmit} className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Header Settings Card */}
+            <div className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-xl border border-slate-200 dark:border-slate-700 rounded-3xl p-8 shadow-xl dark:shadow-none space-y-8">
+              <div className="grid md:grid-cols-3 gap-6">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1">Title</label>
+                  <input
+                    type="text"
+                    value={formData.title}
+                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                    className="w-full px-5 py-3.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium"
+                    required
+                    placeholder="Class 12 Physics Finals"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1">Subject</label>
+                  <select
+                    value={formData.subject}
+                    onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
+                    className="w-full px-5 py-3.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-bold cursor-pointer"
+                  >
+                    <option value="science">Science</option>
+                    <option value="physics">Physics</option>
+                    <option value="chemistry">Chemistry</option>
+                    <option value="mathematics">Mathematics</option>
+                    <option value="english">English</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-3 gap-6">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1">Class Level</label>
+                  <select
+                    value={formData.class_level}
+                    onChange={(e) => setFormData({ ...formData, class_level: e.target.value })}
+                    className="w-full px-5 py-3.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-bold cursor-pointer"
+                  >
+                    {[8, 9, 10, 11, 12].map(g => <option key={g} value={String(g)}>Grade {g}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1 flex items-center gap-2">
+                    <MdAccessTime size={18} className="text-indigo-500" /> Duration <span className="text-xs text-slate-400 font-normal">(mins)</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.duration_minutes}
+                    onChange={(e) => setFormData({ ...formData, duration_minutes: parseInt(e.target.value) || 60 })}
+                    className="w-full px-5 py-3.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-bold"
+                  />
+                </div>
+                <div className="flex items-end px-1 pb-1">
+                  <div className="flex items-center gap-3 bg-slate-100 dark:bg-slate-900/50 p-2 rounded-2xl flex-1 justify-center border border-slate-200 dark:border-slate-700">
+                    <span className="text-xs font-black uppercase text-indigo-500 tracking-wider">Total Marks</span>
+                    <span className="text-2xl font-black text-slate-900 dark:text-slate-100">{totalMarks}</span>
+                  </div>
+                </div>
+              </div>
+
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Title</label>
-                <input
-                  type="text"
-                  value={formData.title}
-                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                  required
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2.5 ml-1 flex items-center gap-2">
+                  <MdInfoOutline className="text-indigo-500" /> Instructions
+                </label>
+                <textarea
+                  value={formData.instructions}
+                  onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
+                  className="w-full px-5 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium"
+                  rows="2"
+                  placeholder="Read questions carefully, all are mandatory..."
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Subject</label>
-                <select
-                  value={formData.subject}
-                  onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
-                  className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                >
-                  <option value="science">Science</option>
-                  <option value="mathematics">Mathematics</option>
-                </select>
+
+              {/* Exam Mode Toggle */}
+              <div className={`p-6 rounded-3xl border-2 transition-all duration-300 ${formData.is_exam_mode ? 'border-indigo-500 bg-indigo-50/20 dark:bg-indigo-900/10' : 'border-slate-100 dark:border-slate-700'}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className={`p-3 rounded-2xl ${formData.is_exam_mode ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-900 text-slate-400'}`}>
+                      <MdAccessTime size={24} />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-900 dark:text-slate-100">Scheduled Exam Mode</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Auto-lock paper submission outside specified time window</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFormData(f => ({ ...f, is_exam_mode: !f.is_exam_mode }))}
+                    className="text-indigo-600 focus:outline-none"
+                  >
+                    {formData.is_exam_mode ? <MdToggleOn size={52} /> : <MdToggleOff className="text-slate-300 dark:text-slate-600" size={52} />}
+                  </button>
+                </div>
+                {formData.is_exam_mode && (
+                  <div className="grid sm:grid-cols-2 gap-6 mt-6 animate-in fade-in zoom-in-95 duration-200">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase mb-2 ml-1">Start Time (IST)</label>
+                      <input
+                        type="datetime-local"
+                        value={formData.exam_start_time}
+                        onChange={e => setFormData(f => ({ ...f, exam_start_time: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500/20 outline-none dark:text-slate-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase mb-2 ml-1">End Time (IST)</label>
+                      <input
+                        type="datetime-local"
+                        value={formData.exam_end_time}
+                        onChange={e => setFormData(f => ({ ...f, exam_end_time: e.target.value }))}
+                        className="w-full px-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-indigo-500/20 outline-none dark:text-slate-100 transition-all"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Duration (minutes)</label>
-              <input
-                type="number"
-                value={formData.duration_minutes}
-                onChange={(e) => setFormData({ ...formData, duration_minutes: parseInt(e.target.value) || 60 })}
-                className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Instructions</label>
-              <textarea
-                value={formData.instructions}
-                onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
-                className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                rows="3"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-sm font-medium text-slate-900">Questions</h3>
+            {/* Questions Section */}
+            <div className="space-y-6">
+              <div className="flex justify-between items-center px-4">
+                <h3 className="text-2xl font-black text-slate-900 dark:text-slate-100">Questions</h3>
                 <button
                   type="button"
                   onClick={addQuestion}
-                  className="text-sm text-slate-900 hover:text-slate-700 font-medium"
+                  className="inline-flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-6 py-2.5 rounded-2xl font-black text-xs text-indigo-600 dark:text-indigo-400 hover:bg-slate-50 dark:hover:bg-slate-700 shadow-sm transition-all active:scale-95"
                 >
-                  + Add Question
+                  <MdAdd size={18} /> Add New Question
                 </button>
               </div>
 
-              {questions.map((q, index) => (
-                <div key={index} className="border border-slate-200 rounded-lg p-4 mb-3">
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-sm font-medium text-slate-900">Question {index + 1}</span>
-                    {questions.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => removeQuestion(index)}
-                        className="text-sm text-red-600 hover:text-red-700"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <textarea
-                    value={q.question_text}
-                    onChange={(e) => updateQuestion(index, 'question_text', e.target.value)}
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-lg mb-3 focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                    placeholder="Enter question text"
-                    rows="2"
-                    required
-                  />
-                  <div className="grid grid-cols-2 gap-3">
-                    <select
-                      value={q.question_type}
-                      onChange={(e) => updateQuestion(index, 'question_type', e.target.value)}
-                      className="px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                    >
-                      <option value="short">Short Answer</option>
-                      <option value="long">Long Answer</option>
-                      <option value="mcq">MCQ</option>
-                    </select>
-                    <input
-                      type="number"
-                      value={q.marks}
-                      onChange={(e) => updateQuestion(index, 'marks', e.target.value)}
-                      className="px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                      placeholder="Marks"
-                      required
-                    />
-                  </div>
-                  
-                  {q.question_type === 'mcq' && (
-                    <div className="mt-3 space-y-2">
-                      <p className="text-sm font-medium text-slate-700">Options:</p>
-                      {['A', 'B', 'C', 'D'].map(opt => (
-                        <input
-                          key={opt}
-                          type="text"
-                          value={q.options?.[opt] || ''}
-                          onChange={(e) => updateMCQOption(index, opt, e.target.value)}
-                          className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                          placeholder={`Option ${opt}`}
-                          required
-                        />
-                      ))}
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Correct Answer:</label>
-                        <select
-                          value={q.correct_answer || 'A'}
-                          onChange={(e) => updateQuestion(index, 'correct_answer', e.target.value)}
-                          className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-slate-900 focus:border-transparent transition"
-                        >
-                          <option value="A">A</option>
-                          <option value="B">B</option>
-                          <option value="C">C</option>
-                          <option value="D">D</option>
-                        </select>
+              <div className="space-y-6">
+                {questions.map((q, index) => (
+                  <div key={index} className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-[2.5rem] p-8 shadow-lg dark:shadow-none hover:shadow-2xl dark:hover:shadow-indigo-500/5 transition-all duration-300 group">
+                    <div className="flex justify-between items-center mb-6">
+                      <div className="flex items-center gap-3">
+                        <span className="w-10 h-10 bg-indigo-600 text-white rounded-2xl flex items-center justify-center font-black text-lg shadow-lg shadow-indigo-200 dark:shadow-none">
+                          {index + 1}
+                        </span>
+                        <span className="text-sm font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">Question</span>
                       </div>
+                      {questions.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeQuestion(index)}
+                          className="p-2.5 text-slate-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-2xl transition-all"
+                        >
+                          <MdDelete size={24} />
+                        </button>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
-            </div>
 
-            <div className="flex gap-3 pt-4">
-              <button
-                type="submit"
-                className="flex-1 bg-slate-900 text-white py-2.5 rounded-lg hover:bg-slate-800 transition font-medium"
-              >
-                Create Paper
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate('/teacher')}
-                className="px-6 text-slate-600 hover:text-slate-900 transition"
-              >
-                Cancel
-              </button>
+                    <div className="space-y-6">
+                      <textarea
+                        value={q.question_text}
+                        onChange={(e) => updateQuestion(index, 'question_text', e.target.value)}
+                        className="w-full px-6 py-5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-3xl text-lg font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none dark:text-slate-100"
+                        placeholder="Type your question here... e.g. What is the fundamental unit of life?"
+                        rows="3"
+                        required
+                      />
+
+                      <div className="grid sm:grid-cols-2 gap-6">
+                        <div className="relative">
+                          <label className="block text-xs font-black text-slate-400 uppercase mb-2 ml-1">Response Type</label>
+                          <select
+                            value={q.question_type}
+                            onChange={(e) => updateQuestion(index, 'question_type', e.target.value)}
+                            className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl font-bold focus:ring-2 focus:ring-indigo-500/20 outline-none dark:text-slate-100 appearance-none cursor-pointer"
+                          >
+                            <option value="short">Short Answer</option>
+                            <option value="long">Detailed Explanation</option>
+                            <option value="mcq">Multiple Choice (MCQ)</option>
+                          </select>
+                          <div className="absolute right-6 bottom-4 text-slate-400 pointer-events-none">
+                            {q.question_type === 'short' ? <MdList size={20} /> : q.question_type === 'long' ? <MdFormatListNumbered size={20} /> : <MdRadioButtonChecked size={20} />}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-black text-slate-400 uppercase mb-2 ml-1">Maximum Marks</label>
+                          <input
+                            type="number"
+                            value={q.marks}
+                            onChange={(e) => updateQuestion(index, 'marks', e.target.value)}
+                            className="w-full px-6 py-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl font-black focus:ring-2 focus:ring-indigo-500/20 outline-none dark:text-slate-100"
+                            placeholder="Marks"
+                            required
+                          />
+                        </div>
+                      </div>
+
+                      {q.question_type === 'mcq' && (
+                        <div className="space-y-4 pt-4 border-t border-slate-100 dark:border-slate-700 animate-in fade-in slide-in-from-top-2 duration-300">
+                          <label className="text-sm font-black text-slate-900 dark:text-slate-100 mb-2 block ml-1 flex items-center gap-2">
+                            <MdRadioButtonChecked className="text-indigo-500" /> Options Setup
+                          </label>
+                          <div className="grid sm:grid-cols-2 gap-4">
+                            {['A', 'B', 'C', 'D'].map(opt => (
+                              <div key={opt} className="relative group/opt">
+                                <span className={`absolute left-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg flex items-center justify-center font-black text-sm transition-colors ${q.correct_answer === opt ? 'bg-emerald-600 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'}`}>
+                                  {opt}
+                                </span>
+                                <input
+                                  type="text"
+                                  value={q.options?.[opt] || ''}
+                                  onChange={(e) => updateMCQOption(index, opt, e.target.value)}
+                                  className={`w-full pl-16 pr-4 py-4 bg-slate-50 dark:bg-slate-900 border rounded-2xl font-medium focus:ring-2 focus:ring-indigo-500/20 outline-none dark:text-slate-100 transition-all ${q.correct_answer === opt ? 'border-emerald-500 ring-2 ring-emerald-500/10' : 'border-slate-200 dark:border-slate-700'}`}
+                                  placeholder={`Option ${opt} text`}
+                                  required
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => updateQuestion(index, 'correct_answer', opt)}
+                                  className={`absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-xl transition-all ${q.correct_answer === opt ? 'text-emerald-500' : 'text-slate-300 group-hover/opt:text-slate-500'}`}
+                                >
+                                  <MdCheckCircle size={24} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex gap-4 pt-10">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="flex-[2] bg-indigo-600 hover:bg-indigo-700 text-white py-5 rounded-[2rem] font-black text-lg shadow-xl shadow-indigo-100 dark:shadow-none transition-all flex items-center justify-center gap-3 transform active:scale-95 disabled:opacity-70"
+                >
+                  {loading ? <BiLoaderAlt className="animate-spin" size={28} /> : (
+                    <>
+                      <span>Generate Question Paper</span>
+                      <MdCheckCircle size={24} />
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/teacher')}
+                  className="flex-1 bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 py-5 rounded-[2.5rem] font-black hover:bg-slate-50 dark:hover:bg-slate-700 transition-all text-lg"
+                >
+                  Discard
+                </button>
+              </div>
             </div>
           </form>
         )}
