@@ -136,8 +136,96 @@ k12-answer-evaluator/
 
 *   **Contribution Guidelines:** All contributors must branch from `main`, use standard commit messages (`feat:`, `fix:`, `docs:`), and submit a Pull Request.
 *   **License:** MIT License.
-*   **Documentation Linkage:**
-    *   [README.md](./README.md) - Quick Overview.
-    *   [CHANGELOG.md](./CHANGELOG.md) - Tracked version changes.
-    *   [TEST_PLAN.md](./TEST_PLAN.md) - Testing QA strategies.
-    *   **Risk Register:** Kept internally by the project manager.
+*   **Risk Register:** Kept internally by the project manager.
+
+---
+
+## 6. Project README Overview
+
+# K12 Answer Evaluator
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Version](https://img.shields.io/badge/version-2.0.0-green.svg)
+![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)
+
+## Overview
+The **K12 Answer Evaluator** is a cutting-edge educational platform designed to automate the evaluation of handwritten student answer sheets. It leverages Google Cloud Vision for OCR, Gemini AI for intelligent grading against an answer key, and an advanced Retrieval-Augmented Generation (RAG) system to query textbook content for accurate feedback. 
+
+It provides two distinct portals:
+- **Teacher Portal:** Central hub to extract, create, and assign question papers. Gives teachers final authority to override AI evaluations.
+- **Student Portal:** A unified, glassmorphism-themed UI where students can upload handwritten answers, monitor tracking indicators, analyze subject-wise trends, and download detailed PDF report cards.
+
+## Hackathon Criteria Fulfillment
+This project was built to directly address the K12 AI Evaluation Hackathon problem statement.
+*   **Target:** CBSE/Matriculation K12 education (configured via `class_level` and `subject`).
+*   **What is wrong & Why it is wrong:** The AI parses `errors` into granular `[what, why, impact]` breakdowns.
+*   **Missing Concepts & Improvement:** Outputs `missing_concepts` and `improvement_guidance` to tell students exactly how to improve.
+*   **Correct Expected Answer:** Outputs `correct_answer_should_include` compared against the student's submission.
+*   **Working Flow:** End-to-end integration (Upload -> OCR -> Vector DB RAG -> Gemini LLM Evaluation -> Score/Feedback Generation -> Student Dashboard).
+
+---
+
+## 7. Changelog
+
+All notable changes to this project will be documented in this section.
+The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
+
+### [2.0.0] - 2026-02-21
+
+#### Added
+- **Core AI Evaluation**: Completely revamped the `evaluate_submission` function to utilize Google Gemini via `google-genai` and `langchain` components instead of OpenAI.
+- **OCR System Integration**: Integrated Google Cloud Vision to robustly parse handwritten text, checkboxes, diagrams, and mathematical symbols directly from image uploads.
+- **Knowledge Base (RAG)**: Developed a textbook processing pipeline uploading documents into Qdrant for context-aware grading.
+- **Student Performance Dashboard**: Added dynamic progress tracking, bar charts, and historical submission timelines.
+- **Interactive Reports & Leaderboards**: Added PDF Report Card streaming (`reportlab`) and class ranking leaderboards per paper.
+- **Notification System**: Added real-time polling to inform students of evaluation completions and new assignments.
+- **Student Profile Management**: Added the ability for students to specify their `grade` level across the frontend UI and database.
+
+#### Fixed
+- **Database Enum Errors**: Resolved critical `DataError` exceptions related to PostgreSQL Enum capitalization by syncing SQLAlchemy definitions strictly to lowercase mappings.
+- **Context Generation Chunking**: Fixed file ingestion bugs with unstructured text that previously triggered database transaction rollbacks.
+- **Frontend State Synching**: Removed orphaned React hooks that blocked evaluation state refreshing when navigating to the results viewer.
+
+---
+
+## 8. Test Plan
+
+### 8.1 Quality Assurance Objective
+To ensure that the application functions seamlessly across its core user personas (student and teacher). The primary objective is to guarantee the robustness of the AI Evaluation process and prevent grade falsification or authentication breaches.
+
+### 8.2 Test Strategies
+
+#### 8.2.1 Backend Unit & Integration Tests (Pytest)
+- Validating the parsing integrity of our custom OCR pipeline.
+- Ensuring `google_genai` prompts safely parse structured JSON without crashing under abnormal token inputs.
+- Ensuring secure multi-role JWT route protection (Students cannot access Teacher Endpoints, vice versa).
+
+#### 8.2.2 Frontend Functional Testing
+- Route protection guards are operating correctly (`<ProtectedRoute>` component).
+- Form validation effectively handles edge cases (e.g., uploading malformed images, missing text fields).
+- Verifying the React State lifecycle for real-time polling updates when papers move to "Evaluated" state.
+
+#### 8.2.3 Evaluation Quality Testing
+Testing the AI output against a benchmark suite of manual human-graded answer sheets to determine scoring drift. Ensure the `get_rag_context` effectively halts hallucinated grades by grounding answers to the supplied textbook embeddings.
+
+### 8.3 Core Test Scenarios (Manual Regression)
+
+**Authentication & Roles**
+- [ ] User can register a Teacher account.
+- [ ] User can register a Student account.
+- [ ] User can log in with valid credentials.
+- [ ] API rejects requests missing a JWT Bearer header.
+
+**Teacher Workflow**
+- [ ] Create a Question Paper manually.
+- [ ] Extract question paper from an image/PDF (OCR Vision test).
+- [ ] Upload a reference textbook (PDF RAG test).
+- [ ] Override AI-given marks on a student submission.
+
+**Student Workflow**
+- [ ] View assigned / available papers in the dashboard.
+- [ ] "Profile missing grade" badge redirects to the `student/profile` route properly.
+- [ ] Uploading 1-3 images successfully initiates a background task without hitting upload timeouts.
+- [ ] View granular line-by-line feedback.
+- [ ] Download a PDF Report Card that accurately totals the marks.
+
