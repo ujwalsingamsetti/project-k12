@@ -11,6 +11,14 @@ It provides two distinct portals:
 - **Teacher Portal:** Central hub to extract, create, and assign question papers. Gives teachers final authority to override AI evaluations.
 - **Student Portal:** A unified, glassmorphism-themed UI where students can upload handwritten answers, monitor tracking indicators, analyze subject-wise trends, and download detailed PDF report cards.
 
+## Hackathon Criteria Fulfillment
+This project was built to directly address the K12 AI Evaluation Hackathon problem statement.
+*   **Target:** CBSE/Matriculation K12 education (configured via `class_level` and `subject`).
+*   **What is wrong & Why it is wrong:** The AI parses `errors` into granular `[what, why, impact]` breakdowns.
+*   **Missing Concepts & Improvement:** Outputs `missing_concepts` and `improvement_guidance` to tell students exactly how to improve.
+*   **Correct Expected Answer:** Outputs `correct_answer_should_include` compared against the student's submission.
+*   **Working Flow:** End-to-end integration (Upload -> OCR -> Vector DB RAG -> Gemini LLM Evaluation -> Score/Feedback Generation -> Student Dashboard).
+
 ## Quick Install & Usage
 ### Prerequisites
 - Python 3.10+

@@ -7,7 +7,8 @@
 *   **Objectives:** 
     *   Achieve an AI grading accuracy comparable to human teachers.
     *   Reduce evaluation time per paper from minutes to seconds.
-    *   Provide a robust RAG (Retrieval-Augmented Generation) system to anchor AI evaluations to specific textbook curricula.
+    *   Provide a robust RAG (Retrieval-Augmented Generation) system to anchor AI evaluations to specific textbook curricula to prevent hallucination.
+    *   **Hackathon Focus:** Move beyond simple "marks" by explicitly telling students **what is wrong**, **why it is wrong**, **what concepts are missing**, and exactly **how to improve** using the `google-genai` evaluator prompt.
 *   **Scope:** The system covers teacher assignment creation, student answer submission (image/PDF uploads), AI-driven evaluation using Google Cloud Vision and Gemini AI, report card generation, and real-time notifications.
 *   **Stakeholders:**
     *   **Teachers/Educators:** End-users creating papers and reviewing AI grades.
