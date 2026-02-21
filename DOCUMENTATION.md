@@ -1,168 +1,142 @@
 # K12 Answer Sheet Evaluator - Project Documentation
 
-## 1. Overview
-The **K12 Answer Sheet Evaluator** is an automated educational platform that allows teachers to create question papers, digitize handwritten student answer sheets, and automatically evaluate them using OCR (Optical Character Recognition) and advanced AI models. It also offers a student portal to view assignments, submit answers, check their evaluation scores, and track their progress over time.
+## 1. Core Planning Documents
+
+### 1.1 Project Charter
+*   **Purpose:** To automate and streamline the evaluation of K12 handwritten answer sheets using OCR and AI, reducing educator workload and providing rapid, detailed feedback to students.
+*   **Objectives:** 
+    *   Achieve an AI grading accuracy comparable to human teachers.
+    *   Reduce evaluation time per paper from minutes to seconds.
+    *   Provide a robust RAG (Retrieval-Augmented Generation) system to anchor AI evaluations to specific textbook curricula.
+*   **Scope:** The system covers teacher assignment creation, student answer submission (image/PDF uploads), AI-driven evaluation using Google Cloud Vision and Gemini AI, report card generation, and real-time notifications.
+*   **Stakeholders:**
+    *   **Teachers/Educators:** End-users creating papers and reviewing AI grades.
+    *   **Students:** End-users submitting answers and reviewing performance.
+    *   **School Administrators:** Overseeing system usage and metrics.
+*   **High-Level Risks:**
+    *   *Risk:* Inaccurate OCR extraction due to poor student handwriting.
+    *   *Risk:* AI hallucinations or incorrect grading penalizing students.
+    *   *Mitigation:* Mandatory teacher review overrides; robust RAG context injection.
+
+### 1.2 Requirements Specification
+*   **Functional:**
+    *   Teachers can upload textbooks to build a vector knowledge base.
+    *   Students can submit images of physical answer sheets.
+    *   System automatically detects questions, handwriting, and diagrams.
+    *   System matches answers against the answer key and textbook data.
+    *   System generates PDF report cards and Leaderboards.
+*   **Non-Functional:**
+    *   High availability, real-time sync (polling/websockets), low latency for the UI.
+    *   Secure JWT authentication and role-based access control (RBAC).
 
 ---
 
-## 2. Technology Stack
+## 2. Technical Specifications
 
-### Backend
-* **Language & Runtime:** Python 3.10+
-* **Framework:** FastAPI
-* **Database:** PostgreSQL
-* **ORM & Migrations:** SQLAlchemy, Alembic
-* **Data Validation:** Pydantic
-* **Authentication:** JWT (JSON Web Tokens), `passlib`, `python-jose`
-* **File Processing & Images:** `PyMuPDF`, `pdf2image`, `Pillow`, `opencv-python`
-* **OCR System:** Google Cloud Vision API, Tesseract OCR (`pytesseract`), `textblob`, `pyspellchecker`
-* **AI & Machine Learning:** 
-  * `google-genai` (Google Gemini API for evaluation and question extraction)
-  * `openai`, `langchain`, `qdrant-client` (Vector DB for textbook context RAG)
-  * `sentence-transformers`
-* **Rate Limiting:** `slowapi`
-* **PDF Generation:** `reportlab` (for student report cards)
+### 2.1 System Architecture
+*   **Client-Server Model:** Frontend built in React communicating with a Python FastAPI backend via REST APIs.
+*   **Asynchronous Processing:** Heavy AI/OCR tasks are offloaded to FastAPI `BackgroundTasks` to avoid blocking the HTTP request thread.
+*   **RAG Architecture:** Textbooks are parsed (`PyMuPDF`), chunked, embedded (`sentence-transformers`), and stored in Qdrant. Context is retrieved dynamically during answer evaluation.
 
-### Frontend
-* **Language:** JavaScript (ES6+), React 19
-* **Build Tool:** Vite
-* **Styling:** Tailwind CSS (Modern, dynamic, glassmorphism UI)
-* **Routing:** React Router v7
-* **State Management:** React Context API (AuthContext, ThemeContext, ToastContext)
-* **HTTP Client:** Axios
-* **Icons:** `react-icons`
+### 2.2 Technology Stack & Dependencies
+*   **Backend:** Python 3.10+, FastAPI, SQLAlchemy, PostgreSQL, Alembic.
+*   **AI/ML:** Google Cloud Vision, Gemini API (`google-genai`), Qdrant, LangChain.
+*   **Frontend:** React 19, Tailwind CSS, Vite, React Router v7, Axios.
 
----
+### 2.3 Data Design & Database Schema Operations
+*   **Users:** Stores `id`, `email`, `role` (Teacher/Student), `full_name`, `grade`.
+*   **Textbooks:** Stores metadata and file paths for RAG vector embeddings.
+*   **QuestionPapers / Questions:** Relational storage for paper structures, answer keys, and max marks.
+*   **AnswerSubmissions / Evaluations:** Tracks student upload statuses, total marks, and granular per-question evaluations.
+*   **Notifications:** polymorphic target tracking (unread, read, clears).
 
-## 3. Core Features & Architecture
-
-### Teacher Capabilities
-* **Question Paper Generation:** Teachers can create question papers manually or generate them by extracting text/diagrams from uploaded PDFs or images.
-* **Textbook Ingestion (RAG):** Teachers can upload reference textbooks. The content is chunked, embedded, and stored in Qdrant (Vector Database) to provide context when the AI evaluates student answers.
-* **Automated Evaluation:** Scans student's uploaded answer sheets, extracts handwriting using Google Cloud Vision, matches answers against the rubric, and gives marks and feedback using Gemini AI.
-* **Manual Override:** Teachers can review the AI evaluation and override the marks/feedback if necessary.
-* **Analytics:** Visual dashboard summarizing class performance, question difficulty, and evaluation trends.
-
-### Student Capabilities
-* **Student Dashboard:** View available assessments, recently evaluated submissions, and a unified progress timeline.
-* **Submitting Answers:** Upload photos or PDFs of handwritten answer sheets.
-* **Detailed Results:** View question-by-question feedback from the AI evaluation, pinpointing mistakes and correct concepts.
-* **Leaderboards:** Check the class ranking for specific papers. Name anonymization applies differently for peers.
-* **Report Cards:** Download a neatly formatted PDF report card with marks, grades, and teacher feedback.
-* **Profile Management:** Set personal details, including grade level (e.g., Grade 10).
-
-### Notifications & UX
-* Real-time polling architecture for Notification bell (evaluated papers, new assignments).
-* Dark Mode / Light Mode theming.
-* Fully responsive UI.
-
----
-
-## 4. Application Workflow
-
-The core lifecycle of an evaluation in the K12 Answer Sheet Evaluator follows these sequential steps:
-
-### Phase 1: Preparation & Creation (Teacher)
-1. **Knowledge Base Setup (Optional):** The teacher uploads relevant textbooks or reference materials (`PDF` format). The system extracts the text, creates vector embeddings using `sentence-transformers`, and stores them in Qdrant (RAG setup).
-2. **Paper Generation:** The teacher creates a question paper. This can be done manually by typing questions and assigning marks, or automatically by uploading an image/PDF of a question paper and letting the Google Gemini Vision API extract the structured questions and sections.
-
-### Phase 2: Assignment & Submission (Student)
-3. **Paper Assignment:** The teacher assigns the created paper to a specific class section or directly to students.
-4. **Student Portal:** Students log into their dashboard, see the newly assigned paper (and receive a notification), and can view the questions.
-5. **Uploading Answers:** The student writes answers on physical paper, takes photos (or scans to PDF), and uploads them submitting the assignment.
-
-### Phase 3: Automated AI Evaluation (System)
-6. **Processing Queue:** The submission is queued as a background task.
-7. **OCR & Extraction:** The system uses Google Cloud Vision to detect handwritten text on the uploaded images. It also detects diagrams and math formulas.
-8. **Context Retrieval (RAG):** For each question, the system queries the Qdrant vector database to pull relevant context from the teacher's uploaded textbooks.
-9. **AI Grading:** The extracted handwritten answer, the original question, the grading rubric/marks, and the retrieved context are passed to the Gemini AI model. The AI evaluates the answer, assigns marks, and generates descriptive feedback explaining what was correct and what was missed.
-
-### Phase 4: Review & Results Feedback
-10. **Teacher Review:** The teacher can view the AI's grading and feedback. If needed, the teacher can manually override the marks or adjust the feedback before finalizing the evaluation.
-11. **Student Feedback:** Once evaluated, the student receives a notification. They can view a detailed breakdown of their results, question by question.
-12. **Analytics & Reports:** Students can download a generated PDF Report Card. Teachers can view analytical dashboards showing the overall class performance and identify historically difficult questions.
-
----
-
-## 5. API Endpoints Reference
-
-### Base URLs
-* Local Backend: `http://localhost:8000/api`
-* Phase 3 V2 routes: `http://localhost:8000/api/v2`
-
-### Authentication (`/api/auth`)
-* `POST /register`: Register a new user (`teacher` or `student`).
-* `POST /login`: Authenticate and return an access token.
-* `GET /me`: Get current authenticated user details.
-* `PATCH /profile`: Update the logged-in user's profile (e.g., full name, grade).
-
-### Teacher Portal (`/api/teacher`)
-* **Papers**
-  * `POST /papers`: Create a new structured question paper.
-  * `GET /papers`: List all papers created by the teacher.
-  * `GET /papers/{id}`: Get specific paper details.
-  * `PUT /papers/{id}`: Update an existing paper.
-  * `DELETE /papers/{id}`: Delete a paper.
-* **Data Extraction**
-  * `POST /extract-questions`: Extract questions from uploaded images/PDFs using OCR without committing them automatically.
-  * `POST /papers/from-image`: End-to-end extraction and creation of a paper.
-* **Evaluation & Submissions**
-  * `GET /papers/{id}/submissions`: Get all submissions for a designated paper.
-  * `GET /papers/{id}/analytics`: Retrieve statistical performance data for a paper.
-  * `POST /papers/{id}/assign`: Assign a paper to a specific section/grade.
-* **Textbooks (Knowledge Base)**
-  * `POST /textbooks`: Upload a PDF textbook to be ingested into the RAG vector store.
-  * `GET /textbooks`: List uploaded reference textbooks.
-  * `DELETE /textbooks/{id}`: Remove a textbook.
-
-### Student Portal (`/api/student`)
-* **Papers**
-  * `GET /teachers`: Fetch list of teachers the student interacts with.
-  * `GET /papers`: View available target papers.
-  * `GET /papers/{id}`: View details of a specific assigned paper.
-* **Submissions**
-  * `POST /submit/{paper_id}`: Upload answer sheet images for a paper. Triggers background evaluation.
-  * `GET /submissions`: Retrieve evaluation history for the student.
-  * `GET /submissions/{id}`: Detailed evaluation result (marks, feedback, answers).
-  * `GET /submissions/{id}/image`: View the originally uploaded raw image page.
-* **Progress Dashboard**
-  * `GET /progress`: Aggregated statistics, subject-wise trends, and timeline data for the student UI.
-
-### Phase 3 Extensions (`/api/v2`)
-* **Notifications**
-  * `GET /notifications`: Get recent notifications and unread count.
-  * `PATCH /notifications/{id}/read`: Mark single notification as read.
-  * `PATCH /notifications/read-all`: Mark all as read.
-  * `DELETE /notifications/clear`: Purge notification history.
-* **Leaderboard**
-  * `GET /papers/{id}/leaderboard`: Gets ranked list of students with scores.
-* **Reports**
-  * `GET /submissions/{id}/report`: Generates and streams PDF report card.
-
----
-
-## 5. Directory Structure
+### 2.4 Code Structure Overview
 ```text
 k12-answer-evaluator/
 ├── backend/
-│   ├── alembic/                # Database migration scripts
 │   ├── app/
 │   │   ├── api/                # FastAPI Controllers (routers)
-│   │   ├── core/               # App config, database session, security logic
+│   │   ├── core/               # App config, DB session, security logic
 │   │   ├── models/             # SQLAlchemy DB schemas
-│   │   ├── schemas/            # Pydantic validation schemas (Input/Output)
+│   │   ├── schemas/            # Pydantic validation schemas
 │   │   ├── services/           # Heavy lifting (OCR, Evaluator AI, RAG ingestion)
 │   │   └── main.py             # FastAPI App definition
-│   ├── uploads/                # Local storage for images/PDFs
-│   └── requirements.txt        # Python backend dependencies
-│
-└── frontend/
-    ├── src/
-    │   ├── components/         # React Views (Auth, Teacher UI, Student UI, Common)
-    │   ├── context/            # Global States (Auth, Theme, Notifications)
-    │   ├── services/           # API handlers (Axios interface)
-    │   ├── App.jsx             # React Router definition
-    │   └── index.css           # Tailwind + Custom styling system
-    ├── package.json            # Node.js dependencies
-    └── tailwind.config.js      # Theme UI config
+├── frontend/
+│   ├── src/
+│   │   ├── components/         # React Views (Auth, Teacher UI, Student UI)
+│   │   ├── context/            # Global States (Auth, Theme, Notifications)
+│   │   ├── services/           # API handlers (Axios interface)
 ```
+
+---
+
+## 3. Usage and Deployment Guides
+
+### 3.1 Setup / Installation Steps
+1.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/your-org/project-k12.git
+    cd project-k12
+    ```
+2.  **Backend Setup:**
+    ```bash
+    cd k12-answer-evaluator/backend
+    python -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    ```
+3.  **Environment Variables (`backend/.env`):**
+    Ensure you specify `DATABASE_URL`, `GEMINI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, and `SECRET_KEY`.
+4.  **Database Migrations:**
+    ```bash
+    alembic upgrade head
+    ```
+5.  **Frontend Setup:**
+    ```bash
+    cd ../../frontend
+    npm install
+    ```
+
+### 3.2 Running the Application
+*   **Start Backend:** `uvicorn app.main:app --reload` (Runs on port 8000)
+*   **Start Frontend:** `npm run dev` (Runs on port 5173/5174)
+
+### 3.3 Quick Start Tutorial & End-User Workflow
+1.  **Teacher Setup:** Sign up as a Teacher, navigate to "Add Textbook" and upload a reference PDF. Then, create a new Question Paper.
+2.  **Student Action:** Sign up as a Student. Go to Dashboard -> Profiles to specify your Grade. Then navigate to Assessments and upload an Answer Sheet image.
+3.  **Completion:** The teacher logs in, reviews the auto-graded sheet, makes overrides if necessary. The student downloads the PDF Report.
+
+### 3.4 Troubleshooting FAQs
+*   **Q:** Why is the AI taking 20+ seconds to evaluate? 
+    *   **A:** Network latency with Gemini API. Heavy OCR extractions inherently take time. It runs in the background.
+*   **Q:** Why is Enum data corrupting operations?
+    *   **A:** Ensure PostgreSQL DB Enum cases match Python schemas exactly (we force everything to lowercase).
+
+---
+
+## 4. API Documentation
+*Full reference of REST endpoints:*
+
+*   `/api/auth/register` (POST) - Account creation
+*   `/api/auth/login` (POST) - Token retrieval
+*   `/api/auth/profile` (PATCH) - Update user data (Name, Grade)
+*   `/api/teacher/papers` (GET, POST, PUT, DELETE) - Paper CRUD
+*   `/api/teacher/papers/from-image` (POST) - OCR/AI Paper generation
+*   `/api/teacher/extract-questions` (POST) - Test OCR parsing
+*   `/api/student/papers` (GET) - View assigned papers
+*   `/api/student/submit/{paper_id}` (POST) - File upload & eval trigger
+*   `/api/v2/notifications` (GET, PATCH, DELETE) - Real-time alerts
+*   `/api/v2/papers/{id}/leaderboard` (GET) - Rank listings
+*   `/api/v2/submissions/{id}/report` (GET) - PDF stream
+
+---
+
+## 5. Maintenance Essentials
+
+*   **Contribution Guidelines:** All contributors must branch from `main`, use standard commit messages (`feat:`, `fix:`, `docs:`), and submit a Pull Request.
+*   **License:** MIT License.
+*   **Documentation Linkage:**
+    *   [README.md](./README.md) - Quick Overview.
+    *   [CHANGELOG.md](./CHANGELOG.md) - Tracked version changes.
+    *   [TEST_PLAN.md](./TEST_PLAN.md) - Testing QA strategies.
+    *   **Risk Register:** Kept internally by the project manager.
