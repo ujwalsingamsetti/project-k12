@@ -150,12 +150,49 @@ def process_submission_multiple(submission_id: str, image_paths: list, paper_id:
         print(f"Question numbers in paper: {[q.question_number for q in paper.questions]}")
         print(f"Question numbers parsed: {list(parsed_answers.keys())}")
         
+        # Smart Answer Mapping (Hackathon fallback for misnumbered OCR)
+        mapped_answers = {}
+        unmapped_answers = []
+        for q_num, ans_text in parsed_answers.items():
+            if any(q.question_number == q_num for q in paper.questions):
+                mapped_answers[q_num] = ans_text
+            else:
+                unmapped_answers.append(ans_text)
+                
+        unmapped_questions = [q for q in paper.questions if q.question_number not in mapped_answers]
+        
+        import re
+        for ans_text in unmapped_answers:
+            if not unmapped_questions:
+                break
+            
+            # For a single missing map, just assign it directly
+            if len(unmapped_answers) == 1 and len(unmapped_questions) == 1:
+                mapped_answers[unmapped_questions[0].question_number] = ans_text
+                unmapped_questions.pop(0)
+                break
+                
+            best_q = None
+            best_score = -1
+            ans_words = set(re.findall(r'\w+', ans_text.lower()))
+            
+            for q in unmapped_questions:
+                q_words = set(re.findall(r'\w+', q.question_text.lower()))
+                score = len(ans_words.intersection(q_words))
+                if score > best_score:
+                    best_score = score
+                    best_q = q
+            
+            if best_q:
+                mapped_answers[best_q.question_number] = ans_text
+                unmapped_questions.remove(best_q)
+        
         # Evaluate each question
         rag_service = RAGService()
         eval_service = EvaluationService()
         
         for question in paper.questions:
-            student_answer = parsed_answers.get(question.question_number, "").strip()
+            student_answer = mapped_answers.get(question.question_number, "").strip()
             
             # Match question type
             if hasattr(question.question_type, 'value'):
@@ -316,12 +353,49 @@ def process_submission(submission_id: str, image_path: str, paper_id: str, _old_
         # Get paper questions
         paper = crud_paper.get_paper(db, paper_id)
         
+        # Smart Answer Mapping (Hackathon fallback for misnumbered OCR)
+        mapped_answers = {}
+        unmapped_answers = []
+        for q_num, ans_text in parsed_answers.items():
+            if any(q.question_number == q_num for q in paper.questions):
+                mapped_answers[q_num] = ans_text
+            else:
+                unmapped_answers.append(ans_text)
+                
+        unmapped_questions = [q for q in paper.questions if q.question_number not in mapped_answers]
+        
+        import re
+        for ans_text in unmapped_answers:
+            if not unmapped_questions:
+                break
+            
+            # For a single missing map, just assign it directly
+            if len(unmapped_answers) == 1 and len(unmapped_questions) == 1:
+                mapped_answers[unmapped_questions[0].question_number] = ans_text
+                unmapped_questions.pop(0)
+                break
+                
+            best_q = None
+            best_score = -1
+            ans_words = set(re.findall(r'\w+', ans_text.lower()))
+            
+            for q in unmapped_questions:
+                q_words = set(re.findall(r'\w+', q.question_text.lower()))
+                score = len(ans_words.intersection(q_words))
+                if score > best_score:
+                    best_score = score
+                    best_q = q
+            
+            if best_q:
+                mapped_answers[best_q.question_number] = ans_text
+                unmapped_questions.remove(best_q)
+        
         # Evaluate each question
         rag_service = RAGService()
         eval_service = EvaluationService()
         
         for question in paper.questions:
-            student_answer = parsed_answers.get(question.question_number, "")
+            student_answer = mapped_answers.get(question.question_number, "").strip()
             
             # Get RAG context
             context_chunks = rag_service.retrieve_relevant_context(
